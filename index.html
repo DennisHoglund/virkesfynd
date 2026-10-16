@@ -16,37 +16,8 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <!-- Inloggning -->
-  <section id="login" class="screen" hidden>
-    <div class="login-card">
-      <div class="logo">🪵</div>
-      <h1>Virkesfynd</h1>
-      <p class="muted">Sundsta grönområden</p>
-      <form id="login-email">
-        <label>E-post<input type="email" id="email" autocomplete="email" required></label>
-        <button class="btn primary" type="submit">Skicka kod</button>
-      </form>
-      <form id="login-code" hidden>
-        <p class="muted" id="code-info"></p>
-        <label>Kod från mejlet<input type="text" id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="10" required></label>
-        <button class="btn primary" type="submit">Logga in</button>
-        <button class="btn ghost" type="button" id="login-back">Byt e-post</button>
-      </form>
-      <p class="error" id="login-error"></p>
-    </div>
-  </section>
-
-  <!-- Konfiguration saknas -->
-  <section id="noconfig" class="screen" hidden>
-    <div class="login-card">
-      <div class="logo">⚙️</div>
-      <h1>Nästan klart</h1>
-      <p class="muted">Fyll i <code>supabaseUrl</code> och <code>supabaseAnonKey</code> i <code>config.js</code>.</p>
-    </div>
-  </section>
-
   <!-- Karta -->
-  <main id="app" hidden>
+  <main id="app">
     <div id="map"></div>
 
     <div id="crosshair" hidden><span></span></div>
@@ -55,7 +26,7 @@
       <button class="chip" id="btn-list" aria-label="Lista">☰ <span id="count">0</span> kvar</button>
       <div class="topbar-right">
         <button class="round" id="btn-layers" aria-label="Kartlager">◫</button>
-        <button class="round" id="btn-menu" aria-label="Meny">⋯</button>
+        <button class="round" id="btn-menu" aria-label="Säkerhetskopia">⋯</button>
       </div>
     </header>
 
@@ -130,22 +101,19 @@
 
   <section class="sheet" id="sheet-menu" hidden>
     <div class="grip"></div>
-    <h2>Inställningar</h2>
-    <label>Ditt namn (syns på fynd du skapar)
-      <input type="text" id="my-name" maxlength="40">
-    </label>
-    <p class="muted small" id="me-email"></p>
-    <div class="row">
-      <button class="btn ghost" id="btn-logout">Logga ut</button>
-      <button class="btn primary" id="btn-save-name">Spara</button>
+    <h2>Säkerhetskopia</h2>
+    <p class="muted small">Fynden och fotona sparas bara i den här telefonen. Spara en kopia ibland, t.ex. till Filer eller iCloud Drive.</p>
+    <p class="small" id="backup-info"></p>
+    <div class="d-actions">
+      <button class="btn primary" id="btn-export">Spara säkerhetskopia</button>
+      <label class="btn" style="text-align:center;color:var(--text)">Återställ från kopia
+        <input type="file" id="import-input" accept=".json,application/json" hidden></label>
     </div>
   </section>
 
   <div class="toast" id="toast" hidden></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="config.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

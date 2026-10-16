@@ -1,12 +1,11 @@
 // Virkesfynd service worker
 // - Appens filer: nätverk först, cache som reserv (så uppdateringar kommer fram direkt)
 // - Kartrutor: cache först, så områden du tittat på finns kvar med svag täckning i skogen
-const APP_CACHE = "vf-app-v1";
+const APP_CACHE = "vf-app-v2";
 const TILE_CACHE = "vf-tiles-v1";
 const MAX_TILES = 3000;
-const SHELL = ["./", "index.html", "style.css", "app.js", "config.js", "manifest.webmanifest",
-  "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css", "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js",
-  "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"];
+const SHELL = ["./", "index.html", "style.css", "app.js", "manifest.webmanifest",
+  "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css", "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"];
 const TILE_HOSTS = ["arcgisonline.com", "opentopomap.org", "tile.openstreetmap.org", "lantmateriet.se"];
 
 self.addEventListener("install", (e) => {
@@ -29,7 +28,6 @@ self.addEventListener("fetch", (e) => {
   const req = e.request;
   if (req.method !== "GET") return;
   const url = new URL(req.url);
-  if (url.hostname.endsWith("supabase.co")) return; // data & foton går alltid direkt
 
   if (TILE_HOSTS.some((h) => url.hostname.endsWith(h))) {
     e.respondWith(caches.open(TILE_CACHE).then(async (c) => {
