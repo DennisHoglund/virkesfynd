@@ -1,5 +1,6 @@
 /* Virkesfynd – markera vindfällen och timmer, hitta tillbaka med motorsågen.
-   Allt sparas lokalt i telefonen (IndexedDB). */
+   Data och foton sparas i Supabase. Den gamla lokala lagringen (IndexedDB) läses
+   bara för att kunna flytta upp fynd som sparades innan databasen fanns. */
 (() => {
   "use strict";
 
@@ -39,43 +40,35 @@
   const fmtDate = (s) => new Date(s).toLocaleDateString("sv-SE", { day: "numeric", month: "short", year: "numeric" });
   const kompassRiktning = (deg) => ["N", "NO", "O", "SO", "S", "SV", "V", "NV"][Math.round(deg / 45) % 8];
 
-  // ---------- Lokal databas (IndexedDB) ----------
-  const DB = (() => {
-    let dbp;
-    const open = () => dbp ||= new Promise((res, rej) => {
-      const r = indexedDB.open("virkesfynd", 1);
-      r.onupgradeneeded = () => {
-        r.result.createObjectStore("fynd", { keyPath: "id" });
-        r.result.createObjectStore("foton", { keyPath: "id" });
-      };
-      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
-    });
-    const tx = async (stores, mode, fn) => {
-      const db = await open();
-      return new Promise((res, rej) => {
-        const t = db.transaction(stores, mode); let out;
-        Promise.resolve(fn(t)).then((v) => (out = v));
-        t.oncomplete = () => res(out); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error);
+  // ---------- Supabase ----------
+  const CFG = window.VIRKESFYND_CONFIG || {};
+  const BUCKET = "foton";
+  const sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey, {
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
+  });
+  let user = null;
+
+  // ---------- Gammal lokal lagring (bara för flytt till databasen) ----------
+  const Legacy = {
+    async open() {
+      if (!("indexedDB" in window)) return null;
+      if (indexedDB.databases) {
+        try { const list = await indexedDB.databases(); if (!list.some((d) => d.name === "virkesfynd")) return null; } catch {}
+      }
+      return new Promise((res) => {
+        const r = indexedDB.open("virkesfynd", 1);
+        r.onupgradeneeded = () => { r.result.createObjectStore("fynd", { keyPath: "id" }); r.result.createObjectStore("foton", { keyPath: "id" }); };
+        r.onsuccess = () => res(r.result); r.onerror = () => res(null);
       });
-    };
-    const req = (r) => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
-    return {
-      all: (s) => tx([s], "readonly", (t) => req(t.objectStore(s).getAll())),
-      get: (s, id) => tx([s], "readonly", (t) => req(t.objectStore(s).get(id))),
-      put: (s, v) => tx([s], "readwrite", (t) => { t.objectStore(s).put(v); }),
-      del: (s, id) => tx([s], "readwrite", (t) => { t.objectStore(s).delete(id); }),
-      saveFynd: (row, photos) => tx(["fynd", "foton"], "readwrite", (t) => {
-        photos.forEach((p) => t.objectStore("foton").put(p));
-        t.objectStore("fynd").put(row);
-      }),
-      deleteFynd: (row) => tx(["fynd", "foton"], "readwrite", (t) => {
-        (row.fotos || []).forEach((id) => t.objectStore("foton").delete(id));
-        t.objectStore("fynd").delete(row.id);
-      }),
-    };
-  })();
-  // Be iOS att inte rensa lagringen
-  navigator.storage?.persist?.().catch(() => {});
+    },
+    async all(store) {
+      const db = await this.open(); if (!db) return [];
+      return new Promise((res) => {
+        const r = db.transaction([store], "readonly").objectStore(store).getAll();
+        r.onsuccess = () => res(r.result || []); r.onerror = () => res([]);
+      });
+    },
+  };
 
   // ---------- Tillstånd ----------
   let map, meMarker, meCircle;
@@ -175,19 +168,38 @@
 
   // ---------- Data ----------
   async function loadFynd() {
-    fynd = (await DB.all("fynd")).sort((a, b) => b.created_at.localeCompare(a.created_at));
+    const { data, error } = await sb.from("fynd").select("*").order("created_at", { ascending: false });
+    if (error) { toast("Kunde inte hämta fynd: " + error.message, 4000); return; }
+    fynd = data;
     renderMarkers(); renderCount();
   }
-  async function photoUrl(id) {
-    if (urlCache.has(id)) return urlCache.get(id);
-    const p = await DB.get("foton", id);
-    const url = p ? URL.createObjectURL(p.blob) : "";
-    urlCache.set(id, url);
-    return url;
+  function subscribe() {
+    sb.channel("fynd-live")
+      .on("postgres_changes", { event: "*", schema: "public", table: "fynd" }, (p) => {
+        if (p.eventType === "DELETE") fynd = fynd.filter((f) => f.id !== p.old.id);
+        else {
+          const i = fynd.findIndex((f) => f.id === p.new.id);
+          if (i >= 0) fynd[i] = p.new; else fynd.unshift(p.new);
+        }
+        renderMarkers(); renderCount();
+        if (!$("#sheet-list").hidden) renderList();
+        if (openId && !$("#sheet-detail").hidden) {
+          if (fynd.some((f) => f.id === openId)) renderDetail(openId); else closeSheets();
+        }
+      })
+      .subscribe();
   }
-  // Fyller i <img data-photo="id"> asynkront
-  function hydratePhotos(root) {
-    root.querySelectorAll("img[data-photo]").forEach(async (img) => { img.src = await photoUrl(img.dataset.photo); });
+  // Signerade länkar till privata foton, hämtas i klump och cachas
+  async function signUrls(paths) {
+    const need = [...new Set(paths)].filter((p) => p && !urlCache.has(p));
+    if (!need.length) return;
+    const { data } = await sb.storage.from(BUCKET).createSignedUrls(need, 60 * 60 * 24 * 7);
+    (data || []).forEach((d) => d.signedUrl && urlCache.set(d.path, d.signedUrl));
+  }
+  async function hydratePhotos(root) {
+    const imgs = [...root.querySelectorAll("img[data-photo]")];
+    await signUrls(imgs.map((i) => i.dataset.photo));
+    imgs.forEach((img) => { img.src = urlCache.get(img.dataset.photo) || ""; });
   }
 
   // ---------- Markörer ----------
@@ -217,10 +229,7 @@
     closeSheets(false);
     $("#backdrop").hidden = false;
     $(`#sheet-${name}`).hidden = false;
-    if (name === "menu") {
-      const n = fynd.length, last = store.get("vf_last_backup", null);
-      $("#backup-info").textContent = `${n} fynd sparade. ` + (last ? `Senaste kopia: ${fmtDate(last)}.` : "Ingen kopia sparad än.");
-    }
+    if (name === "menu") { $("#me-email").textContent = `Inloggad som ${user?.email || ""}`; checkLegacy(); }
   }
   function closeSheets(all = true) {
     document.querySelectorAll(".sheet").forEach((s) => (s.hidden = true));
@@ -309,20 +318,28 @@
     e.preventDefault();
     if (saving || !newPos) return;
     saving = true; const btn = $("#new-save"); btn.disabled = true; btn.textContent = "Sparar…";
+    const id = uuid();
+    const paths = [];
     try {
-      const photos = newPhotos.map((p) => ({ id: uuid(), blob: p.blob }));
+      for (let i = 0; i < newPhotos.length; i++) {
+        const path = `${id}/${uuid()}.jpg`;
+        const { error } = await sb.storage.from(BUCKET).upload(path, newPhotos[i].blob, { contentType: "image/jpeg" });
+        if (error) throw error;
+        paths.push(path);
+        urlCache.set(path, newPhotos[i].url); // visa lokalt direkt
+      }
       const row = {
-        id: uuid(), created_at: new Date().toISOString(),
-        lat: newPos.lat, lng: newPos.lng, noggrannhet: newPos.acc, typ: newTyp,
-        kommentar: $("#new-kommentar").value.trim() || null,
-        fotos: photos.map((p) => p.id), status: "kvar", hamtad_at: null,
+        id, lat: newPos.lat, lng: newPos.lng, noggrannhet: newPos.acc, typ: newTyp,
+        kommentar: $("#new-kommentar").value.trim() || null, fotos: paths,
+        skapad_av_namn: (user?.email || "").split("@")[0],
       };
-      await DB.saveFynd(row, photos);
-      photos.forEach((p, i) => urlCache.set(p.id, newPhotos[i].url));
+      const { data, error } = await sb.from("fynd").insert(row).select().single();
+      if (error) throw error;
       newPhotos = [];
-      fynd.unshift(row);
+      if (!fynd.some((f) => f.id === data.id)) fynd.unshift(data);
       renderMarkers(); renderCount(); closeSheets(); toast("Fynd sparat 🪵");
     } catch (err) {
+      if (paths.length) sb.storage.from(BUCKET).remove(paths);
       toast("Kunde inte spara: " + (err?.message || err), 4000);
     } finally { saving = false; btn.disabled = false; btn.textContent = "Spara"; }
   });
@@ -386,16 +403,18 @@
   }
 
   async function setStatus(f, status) {
-    const row = { ...f, status, hamtad_at: status === "hamtad" ? new Date().toISOString() : null };
-    try { await DB.put("fynd", row); } catch (err) { toast("Kunde inte uppdatera"); return; }
-    const i = fynd.findIndex((x) => x.id === f.id); if (i >= 0) fynd[i] = row;
+    const patch = { status, hamtad_at: status === "hamtad" ? new Date().toISOString() : null };
+    const { data, error } = await sb.from("fynd").update(patch).eq("id", f.id).select().single();
+    if (error) { toast("Kunde inte uppdatera: " + error.message); return; }
+    const i = fynd.findIndex((x) => x.id === f.id); if (i >= 0) fynd[i] = data;
     renderMarkers(); renderCount(); renderDetail(f.id);
     toast(status === "hamtad" ? "Markerad som hämtad ✓" : "Markerad som kvar");
   }
   async function removeFynd(f) {
     if (!confirm("Ta bort fyndet och dess foton?")) return;
-    try { await DB.deleteFynd(f); } catch { toast("Kunde inte ta bort"); return; }
-    (f.fotos || []).forEach((id) => { const u = urlCache.get(id); if (u) URL.revokeObjectURL(u); urlCache.delete(id); });
+    const { error } = await sb.from("fynd").delete().eq("id", f.id);
+    if (error) { toast("Kunde inte ta bort: " + error.message); return; }
+    if (f.fotos?.length) await sb.storage.from(BUCKET).remove(f.fotos);
     fynd = fynd.filter((x) => x.id !== f.id);
     renderMarkers(); renderCount(); closeSheets(); toast("Borttaget");
   }
@@ -434,53 +453,76 @@
     openDetail(li.dataset.id);
   };
 
-  // ---------- Säkerhetskopia ----------
-  const blobToDataUrl = (b) => new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(b); });
-  const dataUrlToBlob = async (u) => (await fetch(u)).blob();
-
-  $("#btn-export").onclick = async () => {
-    const btn = $("#btn-export"); btn.disabled = true; btn.textContent = "Packar…";
-    try {
-      const foton = await DB.all("foton");
-      const data = { app: "virkesfynd", version: 1, exported_at: new Date().toISOString(), fynd,
-        foton: await Promise.all(foton.map(async (p) => ({ id: p.id, data: await blobToDataUrl(p.blob) }))) };
-      const name = `virkesfynd-${new Date().toISOString().slice(0, 10)}.json`;
-      const file = new File([JSON.stringify(data)], name, { type: "application/json" });
-      if (navigator.canShare?.({ files: [file] })) {
-        await navigator.share({ files: [file], title: "Virkesfynd säkerhetskopia" });
-      } else {
-        const a = document.createElement("a"); a.href = URL.createObjectURL(file); a.download = name; a.click();
-        setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-      }
-      store.set("vf_last_backup", new Date().toISOString());
-      closeSheets(); toast("Säkerhetskopia klar");
-    } catch (err) {
-      if (err?.name !== "AbortError") toast("Kunde inte spara kopian");
-    } finally { btn.disabled = false; btn.textContent = "Spara säkerhetskopia"; }
+  // ---------- Flytta upp gamla lokala fynd ----------
+  const migrated = () => new Set(store.get("vf_migrated", []));
+  async function legacyPending() {
+    const done = migrated();
+    return (await Legacy.all("fynd")).filter((f) => !done.has(f.id));
+  }
+  async function checkLegacy() {
+    const pending = await legacyPending();
+    $("#migrate-box").hidden = !pending.length;
+    if (pending.length) $("#migrate-info").textContent =
+      `${pending.length} fynd sparades i telefonen innan databasen fanns. Ladda upp dem så finns de kvar i databasen.`;
+  }
+  $("#btn-migrate").onclick = async () => {
+    const btn = $("#btn-migrate"); btn.disabled = true;
+    const pending = await legacyPending();
+    const foton = new Map((await Legacy.all("foton")).map((p) => [p.id, p.blob]));
+    const done = migrated(); let ok = 0, fail = 0;
+    for (const f of pending) {
+      btn.textContent = `Laddar upp ${ok + fail + 1} av ${pending.length}…`;
+      try {
+        const paths = [];
+        for (const pid of f.fotos || []) {
+          const blob = foton.get(pid); if (!blob) continue;
+          const path = `${f.id}/${pid}.jpg`;
+          const { error } = await sb.storage.from(BUCKET).upload(path, blob, { contentType: "image/jpeg", upsert: true });
+          if (error) throw error;
+          paths.push(path);
+        }
+        const row = {
+          id: f.id, created_at: f.created_at, lat: f.lat, lng: f.lng, noggrannhet: f.noggrannhet,
+          typ: f.typ, kommentar: f.kommentar, fotos: paths, status: f.status || "kvar", hamtad_at: f.hamtad_at || null,
+          skapad_av_namn: (user?.email || "").split("@")[0],
+        };
+        const { error } = await sb.from("fynd").upsert(row, { onConflict: "id" });
+        if (error) throw error;
+        done.add(f.id); store.set("vf_migrated", [...done]); ok++;
+      } catch { fail++; }
+    }
+    btn.disabled = false; btn.textContent = "Ladda upp till databasen";
+    await loadFynd(); await checkLegacy();
+    toast(fail ? `${ok} uppladdade, ${fail} misslyckades – försök igen` : `${ok} fynd uppladdade ✓`, 3500);
   };
 
-  $("#import-input").onchange = async (e) => {
-    const file = e.target.files[0]; e.target.value = "";
-    if (!file) return;
-    try {
-      const data = JSON.parse(await file.text());
-      if (data.app !== "virkesfynd" || !Array.isArray(data.fynd)) throw new Error("fel fil");
-      const have = new Set(fynd.map((f) => f.id));
-      const nya = data.fynd.filter((f) => !have.has(f.id));
-      if (!confirm(`Lägga till ${nya.length} fynd från kopian? Befintliga fynd behålls.`)) return;
-      const fotoById = new Map((data.foton || []).map((p) => [p.id, p.data]));
-      for (const f of nya) {
-        const photos = [];
-        for (const id of f.fotos || []) if (fotoById.has(id)) photos.push({ id, blob: await dataUrlToBlob(fotoById.get(id)) });
-        await DB.saveFynd(f, photos);
-      }
-      await loadFynd(); closeSheets(); toast(`${nya.length} fynd återställda`);
-    } catch { toast("Kunde inte läsa säkerhetskopian", 3500); }
-  };
+  // ---------- Inloggning ----------
+  $("#login-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const btn = $("#login-btn"); btn.disabled = true; $("#login-error").textContent = "";
+    const email = $("#email").value.trim().toLowerCase();
+    const { data, error } = await sb.auth.signInWithPassword({ email, password: $("#password").value });
+    btn.disabled = false;
+    if (error) { $("#login-error").textContent = "Fel e-post eller lösenord."; return; }
+    store.set("vf_email", email);
+    start(data.user);
+  });
+  $("#btn-logout").onclick = async () => { await sb.auth.signOut(); location.reload(); };
 
-  // ---------- Start ----------
-  initMap();
-  startGps();
-  loadFynd().catch(() => toast("Kunde inte öppna lagringen", 4000));
+  async function start(u) {
+    if (user) return;
+    user = u;
+    $("#login").hidden = true; $("#app").hidden = false;
+    initMap();
+    startGps();
+    await loadFynd();
+    subscribe();
+    if ((await legacyPending()).length) toast("Du har fynd i telefonen att ladda upp – se ⋯", 4000);
+  }
+
+  sb.auth.getSession().then(({ data }) => {
+    if (data.session) start(data.session.user);
+    else { $("#login").hidden = false; $("#email").value = store.get("vf_email", ""); }
+  });
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 })();

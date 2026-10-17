@@ -16,8 +16,23 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <!-- Inloggning -->
+  <section id="login" class="screen" hidden>
+    <div class="login-card">
+      <div class="logo">🪵</div>
+      <h1>Virkesfynd</h1>
+      <p class="muted">Logga in för att se dina fynd</p>
+      <form id="login-form">
+        <label>E-post<input type="email" id="email" autocomplete="username" required></label>
+        <label>Lösenord<input type="password" id="password" autocomplete="current-password" required></label>
+        <button class="btn primary" type="submit" id="login-btn">Logga in</button>
+      </form>
+      <p class="error" id="login-error"></p>
+    </div>
+  </section>
+
   <!-- Karta -->
-  <main id="app">
+  <main id="app" hidden>
     <div id="map"></div>
 
     <div id="crosshair" hidden><span></span></div>
@@ -26,7 +41,7 @@
       <button class="chip" id="btn-list" aria-label="Lista">☰ <span id="count">0</span> kvar</button>
       <div class="topbar-right">
         <button class="round" id="btn-layers" aria-label="Kartlager">◫</button>
-        <button class="round" id="btn-menu" aria-label="Säkerhetskopia">⋯</button>
+        <button class="round" id="btn-menu" aria-label="Meny">⋯</button>
       </div>
     </header>
 
@@ -101,19 +116,23 @@
 
   <section class="sheet" id="sheet-menu" hidden>
     <div class="grip"></div>
-    <h2>Säkerhetskopia</h2>
-    <p class="muted small">Fynden och fotona sparas bara i den här telefonen. Spara en kopia ibland, t.ex. till Filer eller iCloud Drive.</p>
-    <p class="small" id="backup-info"></p>
-    <div class="d-actions">
-      <button class="btn primary" id="btn-export">Spara säkerhetskopia</button>
-      <label class="btn" style="text-align:center;color:var(--text)">Återställ från kopia
-        <input type="file" id="import-input" accept=".json,application/json" hidden></label>
+    <h2>Konto</h2>
+    <p class="muted small" id="me-email"></p>
+    <div id="migrate-box" hidden>
+      <h2>Fynd i telefonen</h2>
+      <p class="small" id="migrate-info"></p>
+      <button class="btn primary" id="btn-migrate" style="width:100%">Ladda upp till databasen</button>
+    </div>
+    <div class="d-actions" style="margin-top:16px">
+      <button class="btn ghost" id="btn-logout">Logga ut</button>
     </div>
   </section>
 
   <div class="toast" id="toast" hidden></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.50.0/dist/umd/supabase.js"></script>
+  <script src="config.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -2,29 +2,31 @@
 
 Markera vindfällen, timmer och ris på kartan: ta ett foto och skriv en kommentar. När det är dags för motorsågen hittar du tillbaka med avstånd och riktningspil.
 
-PWA för iPhone, hostad på GitHub Pages. Ingen server och ingen inloggning – allt sparas lokalt i telefonen.
+PWA för iPhone, hostad på GitHub Pages. Data och foton sparas i Supabase.
 
 ## Funktioner
 - Kartlager: Satellit, Hybrid, Terräng (OpenTopoMap), OpenStreetMap, Esri Topo
 - Nytt fynd: GPS-position eller hårkors på kartan, foton direkt från kameran (krymps till 1600 px), typ och kommentar
 - Hitta tillbaka: avstånd och riktningspil (med kompass på iPhone), knapp till Apple Kartor
 - Lista sorterad på avstånd; markera fynd som hämtat
-- Säkerhetskopia: exportera/återställ alla fynd + foton som en JSON-fil (⋯-menyn)
+- Fynd från den lokala versionen kan laddas upp till databasen (⋯-menyn)
 - Kartrutor du tittat på cachas (upp till 3000) för svag täckning i skogen
 
-## Installera
-1. **Settings → Pages → Deploy from a branch → `main` / root** i repot.
-2. Öppna `https://<användare>.github.io/virkesfynd/` i Safari på iPhone.
-3. Dela → **Lägg till på hemskärmen**. Använd alltid hemskärmsikonen – Safari och hemskärmsappen har separat lagring.
+## Supabase (en gång)
+1. **SQL Editor → New query** → klistra in `supabase/schema.sql` → **Run**.
+2. **Authentication → Users → Add user → Create new user**: e-post + lösenord, bocka i *Auto Confirm User*.
+3. **Authentication → Sign In / Providers**: slå av *Allow new users to sign up*.
 
-## Bra att veta
-- Data ligger i telefonens IndexedDB. Tas appen bort från hemskärmen försvinner fynden – spara en säkerhetskopia ibland.
-- Tillåt Plats (och Rörelse & orientering för kompassen) när iPhone frågar.
+Projekt-URL och publik nyckel ligger i `config.js`. Den publika nyckeln får ligga öppet – skyddet sköts av RLS, så bara inloggade användare kommer åt data och foton.
+
+Fler användare: lägg till dem under Authentication → Users.
 
 ## Filer
 | Fil | Innehåll |
 |---|---|
 | `index.html` | Gränssnitt |
-| `app.js` | All logik (karta, GPS, kompass, lokal lagring, säkerhetskopia) |
+| `app.js` | All logik (karta, GPS, kompass, Supabase, flytt av lokala fynd) |
 | `style.css` | Tema "Skog" |
 | `sw.js` | Offline-cache för app och kartrutor |
+| `config.js` | Supabase-URL och publik nyckel |
+| `supabase/schema.sql` | Tabell, RLS-regler och bucket för foton |
