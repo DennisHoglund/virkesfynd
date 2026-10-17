@@ -10,6 +10,8 @@ PWA för iPhone, hostad på GitHub Pages. Data och foton sparas i Supabase.
 - Hitta tillbaka: avstånd och riktningspil (med kompass på iPhone), knapp till Apple Kartor
 - Lista sorterad på avstånd; markera fynd som hämtat
 - Fynd från den lokala versionen kan laddas upp till databasen (⋯-menyn)
+- Fungerar utan täckning: nya fynd, ändringar och borttag läggs i en kö i telefonen och laddas upp automatiskt när nätet är tillbaka (⇅-knappen visar hur många som väntar)
+- Senast hämtade fynd och foton sparas i telefonen, så kartan visar dem även offline
 - Kartrutor du tittat på cachas (upp till 3000) för svag täckning i skogen
 
 ## Supabase (en gång)

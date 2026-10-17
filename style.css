@@ -170,3 +170,9 @@ a.btn { color: var(--text); display: grid; place-items: center; }
   position: fixed; left: 50%; top: calc(var(--safe-t) + 70px); transform: translateX(-50%); z-index: 2000;
   background: var(--bg-3); border: 1px solid var(--line); border-radius: 12px; padding: 10px 16px; font-weight: 600;
 }
+
+/* Synk */
+.chip.sync { font-size: 14px; padding: 10px 12px; color: var(--muted); }
+.chip.sync.warn { color: var(--amber); border-color: var(--amber); }
+.pin.pending { border-style: dashed; border-color: var(--amber); }
+.pending-note { color: var(--amber); font-weight: 600; margin: 8px 0 0; }

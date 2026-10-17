@@ -1,6 +1,7 @@
 /* Virkesfynd – markera vindfällen och timmer, hitta tillbaka med motorsågen.
-   Data och foton sparas i Supabase. Den gamla lokala lagringen (IndexedDB) läses
-   bara för att kunna flytta upp fynd som sparades innan databasen fanns. */
+   Data och foton sparas i Supabase. Alla ändringar läggs först i en kö i telefonen
+   (IndexedDB) och skickas upp när det finns täckning, så appen fungerar i skogen.
+   Senast hämtade fynd sparas lokalt så kartan visar dem även offline. */
 (() => {
   "use strict";
 
@@ -111,9 +112,12 @@
   let map, meMarker, meCircle;
   let me = null;            // {lat, lng, acc}
   let heading = null;       // kompassriktning i grader
-  let fynd = [];
+  let serverFynd = store.get("vf_cache_fynd", []); // senast kända läge i databasen
+  let fynd = [];            // serverFynd + väntande ändringar = det som visas
+  let ops = [];             // väntande ändringar (kön)
+  let offline = false;      // senaste hämtningen misslyckades
   const markers = new Map();
-  const urlCache = new Map(); // foto-id -> object URL
+  const urlCache = new Map(); // foto-sökväg -> URL (signerad eller lokal blob)
   let openId = null;
   let listFilter = "kvar";
   let followMe = false;
@@ -203,35 +207,165 @@
     map.setView([me.lat, me.lng], Math.max(map.getZoom(), 17));
   };
 
+  // ---------- Kö för ändringar (fungerar utan täckning) ----------
+  const Outbox = (() => {
+    let dbp;
+    const open = () => dbp ||= new Promise((res, rej) => {
+      const r = indexedDB.open("virkesfynd-sync", 1);
+      r.onupgradeneeded = () => r.result.createObjectStore("ops", { keyPath: "seq", autoIncrement: true });
+      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+    });
+    const run = (mode, fn) => open().then((db) => new Promise((res, rej) => {
+      const t = db.transaction("ops", mode); const r = fn(t.objectStore("ops"));
+      t.oncomplete = () => res(r?.result); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error);
+    }));
+    return {
+      all: () => run("readonly", (s) => s.getAll()).then((x) => (x || []).sort((a, b) => a.seq - b.seq)),
+      add: (op) => run("readwrite", (s) => s.add(op)),
+      del: (seq) => run("readwrite", (s) => s.delete(seq)),
+    };
+  })();
+
+  async function enqueue(op) {
+    op.queued_at = Date.now();
+    const seq = await Outbox.add(op);
+    ops.push({ ...op, seq });
+    refresh();
+    sync();
+  }
+  async function dropOps(pred) {
+    for (const op of ops.filter(pred)) await Outbox.del(op.seq);
+    ops = ops.filter((o) => !pred(o));
+  }
+
+  // Lägg väntande ändringar ovanpå serverns data
+  function compute() {
+    const byId = new Map(serverFynd.map((f) => [f.id, f]));
+    for (const op of ops) {
+      if (op.type === "create") byId.set(op.id, { status: "kvar", hamtad_at: null, ...op.row, _pending: true });
+      else if (op.type === "update" && byId.has(op.id)) byId.set(op.id, { ...byId.get(op.id), ...op.patch, _pending: true });
+      else if (op.type === "delete") byId.delete(op.id);
+    }
+    return [...byId.values()].sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
+  }
+  function refresh() {
+    fynd = compute();
+    renderMarkers(); renderCount(); renderSync();
+    if (!$("#sheet-list").hidden) renderList();
+    if (openId && !$("#sheet-detail").hidden) {
+      if (fynd.some((f) => f.id === openId)) renderDetail(openId); else closeSheets();
+    }
+  }
+  function setServer(list) {
+    serverFynd = list;
+    store.set("vf_cache_fynd", serverFynd);
+  }
+  function serverUpsert(row) {
+    const i = serverFynd.findIndex((f) => f.id === row.id);
+    const next = serverFynd.slice(); if (i >= 0) next[i] = row; else next.unshift(row);
+    setServer(next);
+  }
+
+  // Fel som går över av sig själv (ingen täckning, utloggad token, serverfel) → försök igen senare
+  function isTransient(err, status) {
+    if (!navigator.onLine) return true;
+    const st = Number(status ?? err?.status ?? err?.statusCode ?? 0);
+    if (!st) return true;
+    if ([401, 403, 408, 425, 429].includes(st) || st >= 500) return true;
+    return /fetch|network|load failed|timeout|offline/i.test(err?.message || "");
+  }
+  async function runOp(op) {
+    if (op.type === "create") {
+      for (const ph of op.photos || []) {
+        const { error } = await sb.storage.from(BUCKET).upload(ph.path, ph.blob, { contentType: "image/jpeg", upsert: true });
+        if (error) return { error };
+      }
+      const { data, error, status } = await sb.from("fynd").upsert(op.row, { onConflict: "id" }).select().single();
+      if (!error) serverUpsert(data);
+      return { error, status };
+    }
+    if (op.type === "update") {
+      const { data, error, status } = await sb.from("fynd").update(op.patch).eq("id", op.id).select();
+      if (!error && data?.[0]) serverUpsert(data[0]);
+      return { error, status };
+    }
+    if (op.type === "delete") {
+      const { error, status } = await sb.from("fynd").delete().eq("id", op.id);
+      if (!error) {
+        if (op.fotos?.length) await sb.storage.from(BUCKET).remove(op.fotos);
+        setServer(serverFynd.filter((f) => f.id !== op.id));
+      }
+      return { error, status };
+    }
+    return {};
+  }
+  let syncing = null;
+  function sync() {
+    if (!user) return Promise.resolve();
+    return syncing ||= (async () => {
+      const had = ops.length; let dropped = 0;
+      const wasStuck = ops.some((o) => Date.now() - (o.queued_at || 0) > 8000);
+      try {
+        while (ops.length) {
+          const op = ops[0];
+          let res;
+          try { res = await runOp(op); } catch (err) { res = { error: err }; }
+          if (res.error) {
+            if (isTransient(res.error, res.status)) break;
+            dropped++; console.warn("Ändring kunde inte sparas", op, res.error);
+          }
+          await Outbox.del(op.seq);
+          ops.shift();
+          refresh();
+        }
+      } finally { syncing = null; }
+      if (dropped) toast(`${dropped} ändring(ar) kunde inte sparas`, 4000);
+      else if (had && !ops.length && wasStuck) toast("Uppladdat ✓");
+      renderSync();
+    })();
+  }
+
   // ---------- Data ----------
   async function loadFynd() {
-    const { data, error } = await sb.from("fynd").select("*").order("created_at", { ascending: false });
-    if (error) { toast("Kunde inte hämta fynd: " + error.message, 4000); return; }
-    fynd = data;
-    renderMarkers(); renderCount();
+    try {
+      const { data, error } = await sb.from("fynd").select("*").order("created_at", { ascending: false });
+      if (error) throw error;
+      setServer(data);
+      offline = false;
+    } catch {
+      offline = true; // visa senast sparade fynd
+    }
+    refresh();
   }
   function subscribe() {
     sb.channel("fynd-live")
       .on("postgres_changes", { event: "*", schema: "public", table: "fynd" }, (p) => {
-        if (p.eventType === "DELETE") fynd = fynd.filter((f) => f.id !== p.old.id);
-        else {
-          const i = fynd.findIndex((f) => f.id === p.new.id);
-          if (i >= 0) fynd[i] = p.new; else fynd.unshift(p.new);
-        }
-        renderMarkers(); renderCount();
-        if (!$("#sheet-list").hidden) renderList();
-        if (openId && !$("#sheet-detail").hidden) {
-          if (fynd.some((f) => f.id === openId)) renderDetail(openId); else closeSheets();
-        }
+        if (p.eventType === "DELETE") setServer(serverFynd.filter((f) => f.id !== p.old.id));
+        else serverUpsert(p.new);
+        refresh();
       })
       .subscribe();
   }
-  // Signerade länkar till privata foton, hämtas i klump och cachas
+  async function online() {
+    await sync();
+    await loadFynd();
+  }
+  window.addEventListener("online", () => user && online());
+  document.addEventListener("visibilitychange", () => { if (!document.hidden && user) online(); });
+  setInterval(() => { if (user && (ops.length || offline)) online(); }, 30000);
+
+  // Signerade länkar till privata foton – sparas i telefonen (7 dagar) så de fungerar offline
+  const savedUrls = store.get("vf_urls", {});
+  for (const [p, v] of Object.entries(savedUrls)) if (v.exp > Date.now()) urlCache.set(p, v.url); else delete savedUrls[p];
   async function signUrls(paths) {
     const need = [...new Set(paths)].filter((p) => p && !urlCache.has(p));
     if (!need.length) return;
-    const { data } = await sb.storage.from(BUCKET).createSignedUrls(need, 60 * 60 * 24 * 7);
-    (data || []).forEach((d) => d.signedUrl && urlCache.set(d.path, d.signedUrl));
+    try {
+      const { data } = await sb.storage.from(BUCKET).createSignedUrls(need, 60 * 60 * 24 * 7);
+      const exp = Date.now() + 1000 * 60 * 60 * 24 * 6;
+      (data || []).forEach((d) => { if (d.signedUrl) { urlCache.set(d.path, d.signedUrl); savedUrls[d.path] = { url: d.signedUrl, exp }; } });
+      store.set("vf_urls", savedUrls);
+    } catch {}
   }
   async function hydratePhotos(root) {
     const imgs = [...root.querySelectorAll("img[data-photo]")];
@@ -239,11 +373,25 @@
     imgs.forEach((img) => { img.src = urlCache.get(img.dataset.photo) || ""; });
   }
 
+  // ---------- Synkstatus ----------
+  function renderSync() {
+    const chip = $("#btn-sync"); if (!chip) return;
+    const n = ops.length;
+    chip.hidden = !n && !offline;
+    chip.classList.toggle("warn", n > 0);
+    chip.textContent = n ? `⇅ ${n} väntar` : "Offline";
+    const info = $("#sync-info");
+    if (info) info.textContent = n
+      ? `${n} ändring(ar) väntar på att laddas upp. Det sker automatiskt när du har täckning.`
+      : (offline ? "Ingen kontakt med databasen just nu. Du ser senast hämtade fynd." : "Allt är uppladdat ✓");
+    const discard = $("#btn-discard"); if (discard) discard.hidden = !n;
+  }
+
   // ---------- Markörer ----------
   function pinIcon(f) {
     const cls = f.status === "hamtad" ? "hamtad" : f.typ;
     const ikon = f.status === "hamtad" ? "✓" : (TYPER[f.typ]?.ikon || "📍");
-    return L.divIcon({ className: "", html: `<div class="pin ${cls}"><i>${ikon}</i></div>`, iconSize: [30, 30], iconAnchor: [15, 30] });
+    return L.divIcon({ className: "", html: `<div class="pin ${cls}${f._pending ? " pending" : ""}"><i>${ikon}</i></div>`, iconSize: [30, 30], iconAnchor: [15, 30] });
   }
   function renderMarkers() {
     const ids = new Set(fynd.map((f) => f.id));
@@ -266,7 +414,7 @@
     closeSheets(false);
     $("#backdrop").hidden = false;
     $(`#sheet-${name}`).hidden = false;
-    if (name === "menu") { $("#me-email").textContent = `Inloggad som ${user?.email || ""}`; checkLegacy(); }
+    if (name === "menu") { $("#me-email").textContent = `Inloggad som ${user?.email || ""}`; renderSync(); checkLegacy(); }
   }
   function closeSheets(all = true) {
     document.querySelectorAll(".sheet").forEach((s) => (s.hidden = true));
@@ -355,28 +503,23 @@
     e.preventDefault();
     if (saving || !newPos) return;
     saving = true; const btn = $("#new-save"); btn.disabled = true; btn.textContent = "Sparar…";
-    const id = uuid();
-    const paths = [];
     try {
-      for (let i = 0; i < newPhotos.length; i++) {
-        const path = `${id}/${uuid()}.jpg`;
-        const { error } = await sb.storage.from(BUCKET).upload(path, newPhotos[i].blob, { contentType: "image/jpeg" });
-        if (error) throw error;
-        paths.push(path);
-        urlCache.set(path, newPhotos[i].url); // visa lokalt direkt
-      }
+      const id = uuid();
+      const photos = newPhotos.map((p) => ({ path: `${id}/${uuid()}.jpg`, blob: p.blob }));
+      photos.forEach((ph, i) => urlCache.set(ph.path, newPhotos[i].url)); // visa direkt
       const row = {
-        id, lat: newPos.lat, lng: newPos.lng, noggrannhet: newPos.acc, typ: newTyp,
-        kommentar: $("#new-kommentar").value.trim() || null, fotos: paths,
+        id, created_at: new Date().toISOString(),
+        lat: newPos.lat, lng: newPos.lng, noggrannhet: newPos.acc, typ: newTyp,
+        kommentar: $("#new-kommentar").value.trim() || null, fotos: photos.map((p) => p.path),
         skapad_av_namn: (user?.email || "").split("@")[0],
       };
-      const { data, error } = await sb.from("fynd").insert(row).select().single();
-      if (error) throw error;
       newPhotos = [];
-      if (!fynd.some((f) => f.id === data.id)) fynd.unshift(data);
-      renderMarkers(); renderCount(); closeSheets(); toast("Fynd sparat 🪵");
+      closeSheets();
+      await enqueue({ type: "create", id, row, photos });
+      // Vänta en kort stund på uppladdningen för att kunna säga hur det gick
+      await Promise.race([syncing || Promise.resolve(), new Promise((r) => setTimeout(r, 5000))]);
+      toast(ops.some((o) => o.id === id) ? "Sparat i telefonen – laddas upp när du får täckning 🪵" : "Fynd sparat 🪵", 3000);
     } catch (err) {
-      if (paths.length) sb.storage.from(BUCKET).remove(paths);
       toast("Kunde inte spara: " + (err?.message || err), 4000);
     } finally { saving = false; btn.disabled = false; btn.textContent = "Spara"; }
   });
@@ -404,6 +547,7 @@
         ${hamtad ? `<span class="tag hamtad">✓ Hämtad</span>` : ""}
       </div>
       ${f.kommentar ? `<p class="d-text">${esc(f.kommentar)}</p>` : ""}
+      ${f._pending ? `<p class="pending-note">⏳ Väntar på uppladdning</p>` : ""}
       <p class="muted small">Markerad ${fmtDate(f.created_at)}${hamtad && f.hamtad_at ? ` · hämtad ${fmtDate(f.hamtad_at)}` : ""}</p>
       <div class="nav-box">
         <div class="arrow" id="d-arrow">↑</div>
@@ -441,19 +585,20 @@
 
   async function setStatus(f, status) {
     const patch = { status, hamtad_at: status === "hamtad" ? new Date().toISOString() : null };
-    const { data, error } = await sb.from("fynd").update(patch).eq("id", f.id).select().single();
-    if (error) { toast("Kunde inte uppdatera: " + error.message); return; }
-    const i = fynd.findIndex((x) => x.id === f.id); if (i >= 0) fynd[i] = data;
-    renderMarkers(); renderCount(); renderDetail(f.id);
+    await enqueue({ type: "update", id: f.id, patch });
     toast(status === "hamtad" ? "Markerad som hämtad ✓" : "Markerad som kvar");
   }
   async function removeFynd(f) {
     if (!confirm("Ta bort fyndet och dess foton?")) return;
-    const { error } = await sb.from("fynd").delete().eq("id", f.id);
-    if (error) { toast("Kunde inte ta bort: " + error.message); return; }
-    if (f.fotos?.length) await sb.storage.from(BUCKET).remove(f.fotos);
-    fynd = fynd.filter((x) => x.id !== f.id);
-    renderMarkers(); renderCount(); closeSheets(); toast("Borttaget");
+    const unsaved = ops.some((o) => o.type === "create" && o.id === f.id);
+    if (unsaved) {
+      // Fyndet har aldrig nått databasen – släng bara ändringarna i kön
+      await dropOps((o) => o.id === f.id);
+      refresh();
+    } else {
+      await enqueue({ type: "delete", id: f.id, fotos: f.fotos || [] });
+    }
+    closeSheets(); toast("Borttaget");
   }
 
   // ---------- Lista ----------
@@ -544,6 +689,12 @@
     store.set("vf_email", email);
     start(data.user);
   });
+  $("#btn-sync").onclick = () => { if (ops.length) { toast("Laddar upp…"); online(); } else { openSheet("menu"); online(); } };
+  $("#btn-sync-now").onclick = async () => { toast("Laddar upp…"); await online(); renderSync(); };
+  $("#btn-discard").onclick = async () => {
+    if (!confirm(`Släng ${ops.length} ändring(ar) som inte laddats upp? Det går inte att ångra.`)) return;
+    await dropOps(() => true); refresh(); toast("Väntande ändringar slängda");
+  };
   $("#btn-logout").onclick = async () => { await sb.auth.signOut(); location.reload(); };
 
   async function start(u) {
@@ -552,7 +703,12 @@
     $("#login").hidden = true; $("#app").hidden = false;
     initMap();
     startGps();
-    await loadFynd();
+    try {
+      ops = await Outbox.all();
+      for (const op of ops) for (const ph of op.photos || []) urlCache.set(ph.path, URL.createObjectURL(ph.blob));
+    } catch {}
+    refresh();               // visa sparade fynd direkt, även utan täckning
+    await online();
     subscribe();
     if ((await legacyPending()).length) toast("Du har fynd i telefonen att ladda upp – se ⋯", 4000);
   }

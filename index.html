@@ -40,6 +40,7 @@
     <header class="topbar">
       <button class="chip" id="btn-list" aria-label="Lista">☰ <span id="count">0</span> kvar</button>
       <div class="topbar-right">
+        <button class="chip sync" id="btn-sync" hidden>Offline</button>
         <button class="round" id="btn-layers" aria-label="Kartlager">◫</button>
         <button class="round" id="btn-menu" aria-label="Meny">⋯</button>
       </div>
@@ -118,6 +119,12 @@
     <div class="grip"></div>
     <h2>Konto</h2>
     <p class="muted small" id="me-email"></p>
+    <h2>Uppladdning</h2>
+    <p class="small" id="sync-info"></p>
+    <div class="row">
+      <button class="btn" id="btn-sync-now">Synka nu</button>
+      <button class="btn danger" id="btn-discard" hidden>Släng väntande</button>
+    </div>
     <div id="migrate-box" hidden>
       <h2>Fynd i telefonen</h2>
       <p class="small" id="migrate-info"></p>
