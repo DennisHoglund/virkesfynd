@@ -43,8 +43,45 @@
   // ---------- Supabase ----------
   const CFG = window.VIRKESFYND_CONFIG || {};
   const BUCKET = "foton";
+  // Inloggningen sparas både i localStorage och IndexedDB, så den överlever
+  // om iOS skulle rensa det ena. Läser localStorage först, annars IndexedDB.
+  const AUTH_KEY = "vf-auth";
+  const idbKV = (() => {
+    let dbp;
+    const open = () => dbp ||= new Promise((res, rej) => {
+      const r = indexedDB.open("virkesfynd-auth", 1);
+      r.onupgradeneeded = () => r.result.createObjectStore("kv");
+      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+    });
+    const run = (mode, fn) => open().then((db) => new Promise((res, rej) => {
+      const t = db.transaction("kv", mode); const r = fn(t.objectStore("kv"));
+      t.oncomplete = () => res(r?.result); t.onerror = () => rej(t.error);
+    }));
+    return {
+      get: (k) => run("readonly", (s) => s.get(k)).catch(() => null),
+      set: (k, v) => run("readwrite", (s) => s.put(v, k)).catch(() => {}),
+      del: (k) => run("readwrite", (s) => s.delete(k)).catch(() => {}),
+    };
+  })();
+  const authStorage = {
+    async getItem(k) {
+      let v = null;
+      try { v = localStorage.getItem(k); } catch {}
+      if (v == null) { v = (await idbKV.get(k)) ?? null; if (v != null) try { localStorage.setItem(k, v); } catch {} }
+      return v;
+    },
+    async setItem(k, v) { try { localStorage.setItem(k, v); } catch {} await idbKV.set(k, v); },
+    async removeItem(k) { try { localStorage.removeItem(k); } catch {} await idbKV.del(k); },
+  };
+  window.__vfAuthStorage = authStorage;
+
   const sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey, {
-    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
+    auth: {
+      persistSession: true, autoRefreshToken: true, detectSessionInUrl: false,
+      storage: authStorage, storageKey: AUTH_KEY,
+      // Hoppa över webbläsarens låsmekanism, som kan hänga i iOS hemskärmsappar
+      lock: (_name, _timeout, fn) => fn(),
+    },
   });
   let user = null;
 
@@ -520,9 +557,27 @@
     if ((await legacyPending()).length) toast("Du har fynd i telefonen att ladda upp – se ⋯", 4000);
   }
 
-  sb.auth.getSession().then(({ data }) => {
-    if (data.session) start(data.session.user);
-    else { $("#login").hidden = false; $("#email").value = store.get("vf_email", ""); }
+  function showLogin() {
+    $("#login").hidden = false;
+    $("#email").value = store.get("vf_email", "");
+    if ($("#email").value) $("#password").focus();
+  }
+  sb.auth.onAuthStateChange((event, session) => {
+    if (event === "SIGNED_OUT" && user) location.reload();
+    if (session?.user && !user && (event === "SIGNED_IN" || event === "TOKEN_REFRESHED")) start(session.user);
   });
+  (async () => {
+    try {
+      const { data } = await sb.auth.getSession();
+      if (data.session) return start(data.session.user);
+    } catch {}
+    // Ingen färsk session (t.ex. dålig täckning vid förnyelse) – finns en sparad, starta ändå.
+    // Supabase förnyar den automatiskt när nätet är tillbaka.
+    try {
+      const saved = JSON.parse((await authStorage.getItem(AUTH_KEY)) || "null");
+      if (saved?.user && saved?.refresh_token) return start(saved.user);
+    } catch {}
+    showLogin();
+  })();
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 })();

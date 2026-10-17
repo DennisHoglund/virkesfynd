@@ -22,9 +22,9 @@
       <div class="logo">🪵</div>
       <h1>Virkesfynd</h1>
       <p class="muted">Logga in för att se dina fynd</p>
-      <form id="login-form">
-        <label>E-post<input type="email" id="email" autocomplete="username" required></label>
-        <label>Lösenord<input type="password" id="password" autocomplete="current-password" required></label>
+      <form id="login-form" method="post" action="#">
+        <label>E-post<input type="email" id="email" name="email" autocomplete="username" autocapitalize="off" required></label>
+        <label>Lösenord<input type="password" id="password" name="password" autocomplete="current-password" required></label>
         <button class="btn primary" type="submit" id="login-btn">Logga in</button>
       </form>
       <p class="error" id="login-error"></p>
