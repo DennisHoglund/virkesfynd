@@ -13,6 +13,13 @@
     annat:     { namn: "Annat",     ikon: "📍" },
   };
   const START = { lat: 59.33, lng: 18.07, zoom: 14 };
+  const PRIO = {
+    normal:  { namn: "Normal",    ikon: "" },
+    brattom: { namn: "Bråttom",   ikon: "⚠️" },
+    stig:    { namn: "Över stig", ikon: "🚧" },
+  };
+  const EXT_COLS = ["prioritet", "tradslag", "antal_stammar", "diameter_cm"];
+  const isPrio = (f) => f.status !== "hamtad" && f.prioritet && f.prioritet !== "normal";
 
   // ---------- Hjälpare ----------
   const store = {
@@ -80,9 +87,7 @@
     auth: {
       persistSession: true, autoRefreshToken: true, detectSessionInUrl: false,
       storage: authStorage, storageKey: AUTH_KEY,
-      // Egen enkel kö i stället för webbläsarens lås (som kan hänga i iOS hemskärmsappar).
-      // Ser till att bara en förnyelse av inloggningen pågår åt gången.
-      lock: (() => { let chain = Promise.resolve(); return (_n, _t, fn) => { const r = chain.then(fn, fn); chain = r.catch(() => {}); return r; }; })(),
+      // Standardlåset (Web Locks) ser till att bara en förnyelse av inloggningen pågår åt gången.
     },
   });
   let user = null;
@@ -286,9 +291,23 @@
     if (ph.blob) { const buf = await ph.blob.arrayBuffer(); return new Blob([buf], { type: "image/jpeg" }); }
     return null;
   }
+  // Nya kolumner finns bara om SQL-uppdateringen körts – annars skickas de inte
+  let hasExt = store.get("vf_hasext", false);
+  async function checkExt() {
+    try {
+      const { error } = await sb.from("fynd").select(EXT_COLS.join(",")).limit(1);
+      if (!error) hasExt = true;
+      else if (/column|PGRST204|42703/i.test(`${error.code} ${error.message}`)) hasExt = false;
+      else return;
+      store.set("vf_hasext", hasExt);
+      $("#ext-fields").hidden = !hasExt;
+    } catch {}
+  }
+  const stripExt = (o) => { if (hasExt) return o; const c = { ...o }; EXT_COLS.forEach((k) => delete c[k]); return c; };
+
   async function runOp(op) {
     if (op.type === "create") {
-      const row = { ...op.row, fotos: [] };
+      const row = stripExt({ ...op.row, fotos: [] });
       for (const ph of op.photos || []) {
         let blob = null;
         try { blob = await photoBlob(ph); } catch (err) { console.warn("Kunde inte läsa foto i kön", err); }
@@ -323,8 +342,11 @@
       return { error, status };
     }
     if (op.type === "update") {
-      const { data, error, status } = await sb.from("fynd").update(op.patch).eq("id", op.id).select();
+      const patch = stripExt(op.patch);
+      if (!Object.keys(patch).length) return {};
+      const { data, error, status } = await sb.from("fynd").update(patch).eq("id", op.id).select();
       if (!error && data?.[0]) serverUpsert(data[0]);
+      if (!error && op.removeFiles?.length) await sb.storage.from(BUCKET).remove(op.removeFiles);
       return { error, status };
     }
     if (op.type === "delete") {
@@ -369,15 +391,23 @@
 
   function sync() {
     if (!user) return Promise.resolve();
-    return syncing ||= (async () => {
+    if (syncing) return syncing;
+    // OBS: sätt `syncing` innan arbetet börjar. Annars kan `finally` nedan köras först
+    // (när kön är tom) och markeringen "uppladdning pågår" blir kvar för alltid.
+    let release;
+    syncing = new Promise((r) => (release = r));
+    (async () => {
       const had = ops.length; let dropped = 0; let done = 0;
       const wasStuck = ops.some((o) => Date.now() - (o.queued_at || 0) > 8000);
       try {
         if (!ops.length) return;
         if (!(await ensureSession()) && needsLogin) return;
         const blocked = new Set(); // id:n vars tidigare ändring inte gick igenom – behåll ordningen per fynd
-        for (const op of ops.slice()) {
-          if (blocked.has(op.id)) continue;
+        const tried = new Set();
+        // Ändringar som läggs i kön medan vi laddar upp plockas upp i nästa varv
+        const next = () => ops.find((o) => !tried.has(o.seq) && !blocked.has(o.id));
+        for (let op = next(); op; op = next()) {
+          tried.add(op.seq);
           let res;
           try { res = await runOp(op); } catch (err) { res = { error: err }; }
           if (res.error && isAuthError(res.error, res.status)) {
@@ -396,11 +426,12 @@
           refresh();
         }
         if (!ops.length && !dropped) { lastError = ""; store.set("vf_last_error", ""); }
-      } finally { syncing = null; renderSync(); }
+      } finally { syncing = null; renderSync(); release(); }
       if (dropped) toast(`${dropped} ändring(ar) kunde inte sparas – se ⋯`, 4000);
       else if (had && !ops.length && wasStuck) toast("Uppladdat ✓");
       else if (ops.length && lastError && done === 0 && navigator.onLine && !offline) toast("Uppladdningen misslyckades – se ⋯", 3500);
-    })();
+    })().catch((err) => { syncing = null; release(); console.warn("sync", err); });
+    return syncing;
   }
 
   // ---------- Data ----------
@@ -426,6 +457,7 @@
   }
   async function online() {
     await ensureSession();
+    await checkExt();
     await sync();
     await loadFynd();
   }
@@ -470,8 +502,8 @@
 
   // ---------- Markörer ----------
   function pinIcon(f) {
-    const cls = f.status === "hamtad" ? "hamtad" : f.typ;
-    const ikon = f.status === "hamtad" ? "✓" : (TYPER[f.typ]?.ikon || "📍");
+    const cls = f.status === "hamtad" ? "hamtad" : isPrio(f) ? "prio" : f.typ;
+    const ikon = f.status === "hamtad" ? "✓" : isPrio(f) ? PRIO[f.prioritet].ikon : (TYPER[f.typ]?.ikon || "📍");
     return L.divIcon({ className: "", html: `<div class="pin ${cls}${f._pending ? " pending" : ""}"><i>${ikon}</i></div>`, iconSize: [30, 30], iconAnchor: [15, 30] });
   }
   function renderMarkers() {
@@ -484,7 +516,7 @@
         m.on("click", () => openDetail(f.id));
         markers.set(f.id, m);
       } else { m.setLatLng([f.lat, f.lng]).setIcon(pinIcon(f)); }
-      m.setZIndexOffset(f.status === "hamtad" ? -100 : 0);
+      m.setZIndexOffset(f.status === "hamtad" ? -100 : isPrio(f) ? 200 : 0);
     }
   }
   function renderCount() { $("#count").textContent = fynd.filter((f) => f.status !== "hamtad").length; }
@@ -507,16 +539,29 @@
   $("#btn-menu").onclick = () => openSheet("menu");
   $("#btn-list").onclick = () => { renderList(); openSheet("list"); };
 
-  // ---------- Nytt fynd ----------
+  // ---------- Nytt fynd / redigera ----------
   let newPos = null;
-  let newPhotos = [];  // {blob, url}
+  let newPhotos = [];  // {blob, url} – nya bilder i formuläret
   let newTyp = "vindfalle";
+  let form = { mode: "new", id: null, prio: "normal", tradslag: null, keep: [] }; // keep = befintliga foton vid redigering
+  let placeMode = "new"; // eller "move"
+  let moveId = null;
 
   $("#btn-new").onclick = () => {
     if (me) map.setView([me.lat, me.lng], Math.max(map.getZoom(), 18));
     followMe = false; $("#btn-locate").classList.remove("active");
+    placeMode = "new";
+    $("#place-text").textContent = "Flytta kartan så krysset hamnar på fyndet";
     setPlacing(true);
   };
+  function startMove(f) {
+    closeSheets();
+    placeMode = "move"; moveId = f.id;
+    followMe = false; $("#btn-locate").classList.remove("active");
+    map.setView([f.lat, f.lng], Math.max(map.getZoom(), 18));
+    $("#place-text").textContent = "Dra kartan så krysset hamnar där fyndet ligger";
+    setPlacing(true);
+  }
   function setPlacing(on) {
     $("#crosshair").hidden = !on; $("#place-bar").hidden = !on;
     $("#btn-new").hidden = on; document.querySelector(".fabs").hidden = on;
@@ -526,12 +571,23 @@
     if (!me) { toast("Väntar på GPS…"); return; }
     map.setView([me.lat, me.lng], Math.max(map.getZoom(), 18));
   };
-  $("#place-ok").onclick = () => {
+  $("#place-ok").onclick = async () => {
     const c = map.getCenter();
+    if (placeMode === "move") {
+      setPlacing(false);
+      const id = moveId;
+      await enqueue({ type: "update", id, patch: { lat: c.lat, lng: c.lng, noggrannhet: null } });
+      toast("Fyndet flyttat 📍");
+      openDetail(id);
+      return;
+    }
     const nearMe = me && distance(me, { lat: c.lat, lng: c.lng }) < 3;
     newPos = { lat: c.lat, lng: c.lng, acc: nearMe ? me.acc : null };
     setPlacing(false);
     resetNewForm();
+    form = { mode: "new", id: null, prio: "normal", tradslag: null, keep: [] };
+    syncFormUi();
+    $("#form-title").textContent = "Nytt fynd";
     $("#new-pos").textContent = `${c.lat.toFixed(5)}, ${c.lng.toFixed(5)}` + (newPos.acc ? ` · GPS ±${Math.round(newPos.acc)} m` : "");
     openSheet("new");
   };
@@ -540,8 +596,40 @@
     newPhotos.forEach((p) => URL.revokeObjectURL(p.url));
     newPhotos = []; newTyp = "vindfalle";
     $("#new-kommentar").value = "";
+    $("#f-antal").value = ""; $("#f-diam").value = "";
     document.querySelectorAll("#new-typ button").forEach((b) => b.classList.toggle("on", b.dataset.v === newTyp));
     renderNewPhotos();
+  }
+  function syncFormUi() {
+    document.querySelectorAll("#new-typ button").forEach((b) => b.classList.toggle("on", b.dataset.v === newTyp));
+    document.querySelectorAll("#f-prio button").forEach((b) => b.classList.toggle("on", b.dataset.v === form.prio));
+    document.querySelectorAll("#f-tradslag button").forEach((b) => b.classList.toggle("on", b.dataset.v === form.tradslag));
+    $("#ext-fields").hidden = !hasExt;
+    renderNewPhotos();
+  }
+  $("#f-prio").onclick = (e) => { const b = e.target.closest("button"); if (!b) return; form.prio = b.dataset.v; syncFormUi(); };
+  $("#f-tradslag").onclick = (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    form.tradslag = form.tradslag === b.dataset.v ? null : b.dataset.v; syncFormUi();
+  };
+  function openEdit(f) {
+    resetNewForm();
+    newTyp = f.typ || "vindfalle";
+    form = { mode: "edit", id: f.id, prio: f.prioritet || "normal", tradslag: f.tradslag || null, keep: [...(f.fotos || [])] };
+    $("#new-kommentar").value = f.kommentar || "";
+    $("#f-antal").value = f.antal_stammar ?? "";
+    $("#f-diam").value = f.diameter_cm ?? "";
+    $("#form-title").textContent = "Redigera fynd";
+    $("#new-pos").textContent = `${f.lat.toFixed(5)}, ${f.lng.toFixed(5)} · flytta via "📍 Flytta" i fyndet`;
+    syncFormUi();
+    openSheet("new");
+  }
+  const numOrNull = (v) => { const n = parseInt(v, 10); return Number.isFinite(n) && n > 0 ? n : null; };
+  function extValues() {
+    return {
+      prioritet: form.prio, tradslag: form.tradslag,
+      antal_stammar: numOrNull($("#f-antal").value), diameter_cm: numOrNull($("#f-diam").value),
+    };
   }
   $("#new-typ").onclick = (e) => {
     const b = e.target.closest("button"); if (!b) return;
@@ -561,6 +649,13 @@
   function renderNewPhotos() {
     const box = $("#new-photos");
     box.querySelectorAll(".thumb").forEach((t) => t.remove());
+    form.keep.forEach((path) => {
+      const d = document.createElement("div"); d.className = "thumb existing";
+      d.innerHTML = `<img data-photo="${path}" alt=""><button type="button" aria-label="Ta bort">✕</button>`;
+      d.querySelector("button").onclick = () => { form.keep = form.keep.filter((x) => x !== path); renderNewPhotos(); };
+      box.appendChild(d);
+    });
+    if (form.keep.length) hydratePhotos(box);
     newPhotos.forEach((p, i) => {
       const d = document.createElement("div"); d.className = "thumb";
       d.innerHTML = `<img src="${p.url}" alt=""><button type="button" aria-label="Ta bort">✕</button>`;
@@ -584,7 +679,9 @@
   $("#new-cancel").onclick = () => { if (!saving) closeSheets(); };
   $("#form-new").addEventListener("submit", async (e) => {
     e.preventDefault();
-    if (saving || !newPos) return;
+    if (saving) return;
+    if (form.mode === "edit") return saveEdit();
+    if (!newPos) return;
     saving = true; const btn = $("#new-save"); btn.disabled = true; btn.textContent = "Sparar…";
     try {
       const id = uuid();
@@ -595,6 +692,7 @@
         lat: newPos.lat, lng: newPos.lng, noggrannhet: newPos.acc, typ: newTyp,
         kommentar: $("#new-kommentar").value.trim() || null, fotos: photos.map((p) => p.path),
         skapad_av_namn: (user?.email || "").split("@")[0],
+        ...(hasExt ? extValues() : {}),
       };
       newPhotos = [];
       closeSheets();
@@ -608,6 +706,32 @@
       toast("Kunde inte spara: " + (err?.message || err), 4000);
     } finally { saving = false; btn.disabled = false; btn.textContent = "Spara"; }
   });
+
+  async function saveEdit() {
+    const f = fynd.find((x) => x.id === form.id); if (!f) { closeSheets(); return; }
+    saving = true; const btn = $("#new-save"); btn.disabled = true; btn.textContent = "Sparar…";
+    try {
+      const patch = {};
+      const next = { typ: newTyp, kommentar: $("#new-kommentar").value.trim() || null, ...(hasExt ? extValues() : {}) };
+      for (const [k, v] of Object.entries(next)) if ((f[k] ?? null) !== v) patch[k] = v;
+      const removed = (f.fotos || []).filter((x) => !form.keep.includes(x));
+      if (removed.length) patch.fotos = form.keep.slice();
+      if (Object.keys(patch).length) await enqueue({ type: "update", id: f.id, patch, removeFiles: removed });
+      if (newPhotos.length) {
+        const photos = await Promise.all(newPhotos.map(async (p) => {
+          const path = `${f.id}/${uuid()}.jpg`; urlCache.set(path, p.url);
+          return { path, buf: await p.blob.arrayBuffer() };
+        }));
+        newPhotos = [];
+        await enqueue({ type: "photos", id: f.id, photos });
+      }
+      closeSheets();
+      openDetail(f.id);
+      toast(Object.keys(patch).length || removed.length || ops.some((o) => o.id === f.id) ? "Ändringar sparade ✓" : "Inga ändringar");
+    } catch (err) {
+      toast("Kunde inte spara: " + (err?.message || err), 4000);
+    } finally { saving = false; btn.disabled = false; btn.textContent = "Spara"; }
+  }
 
   // ---------- Detalj & navigering ----------
   function openDetail(id) {
@@ -627,10 +751,13 @@
       ? `<button class="btn ghost" id="d-compass">🧭 Aktivera kompass</button>` : "";
     $("#detail").innerHTML = `
       ${photos ? `<div class="d-photos">${photos}</div>` : ""}
-      <div class="d-head">
+      <div class="d-head" style="flex-wrap:wrap">
         <span class="tag ${f.typ}">${typ.ikon} ${typ.namn}</span>
+        ${isPrio(f) ? `<span class="tag prio">${PRIO[f.prioritet].ikon} ${PRIO[f.prioritet].namn}</span>` : ""}
+        ${f.tradslag ? `<span class="tag info">${esc(f.tradslag)}</span>` : ""}
         ${hamtad ? `<span class="tag hamtad">✓ Hämtad</span>` : ""}
       </div>
+      ${sizeText(f) ? `<p class="d-size">${sizeText(f)}</p>` : ""}
       ${f.kommentar ? `<p class="d-text">${esc(f.kommentar)}</p>` : ""}
       ${f._pending ? `<p class="pending-note">⏳ Väntar på uppladdning</p>` : ""}
       <p class="muted small">Markerad ${fmtDate(f.created_at)}${hamtad && f.hamtad_at ? ` · hämtad ${fmtDate(f.hamtad_at)}` : ""}</p>
@@ -643,6 +770,10 @@
         <div class="row">
           <a class="btn" href="https://maps.apple.com/?daddr=${f.lat},${f.lng}&dirflg=w" target="_blank" rel="noopener">Kartor ↗</a>
           <button class="btn" id="d-copy">Kopiera koord.</button>
+        </div>
+        <div class="d-tools">
+          <button class="btn" id="d-edit">✏️ Redigera</button>
+          <button class="btn" id="d-move">📍 Flytta</button>
         </div>
         <label class="btn" style="text-align:center">📷 Lägg till foto
           <input type="file" id="d-photo" accept="image/*" multiple hidden></label>
@@ -657,8 +788,16 @@
     };
     $("#d-status").onclick = () => setStatus(f, hamtad ? "kvar" : "hamtad");
     $("#d-photo").onchange = (e) => addPhotos(f, e);
+    $("#d-edit").onclick = () => openEdit(f);
+    $("#d-move").onclick = () => startMove(f);
     $("#d-delete").onclick = () => removeFynd(f);
     updateLive();
+  }
+  function sizeText(f) {
+    const parts = [];
+    if (f.antal_stammar) parts.push(`${f.antal_stammar} ${f.antal_stammar === 1 ? "stam" : "stammar"}`);
+    if (f.diameter_cm) parts.push(`Ø ca ${f.diameter_cm} cm`);
+    return parts.join(" · ");
   }
   function updateLive() {
     if (openId && !$("#sheet-detail").hidden && me) {
@@ -717,12 +856,12 @@
   };
   function renderList() {
     let rows = fynd.filter((f) => listFilter === "alla" || f.status !== "hamtad");
-    if (me) rows = rows.slice().sort((a, b) => distance(me, a) - distance(me, b));
+    rows = rows.slice().sort((a, b) => (isPrio(b) - isPrio(a)) || (me ? distance(me, a) - distance(me, b) : 0));
     $("#list").innerHTML = rows.length ? rows.map((f) => {
       const t = TYPER[f.typ] || TYPER.annat;
       const img = f.fotos?.[0] ? `<img data-photo="${f.fotos[0]}" alt="">` : `<div class="noimg">${t.ikon}</div>`;
       return `<li data-id="${f.id}">${img}
-        <div class="l-main"><div class="l-text"><b>${t.namn}</b>${f.status === "hamtad" ? " · ✓ hämtad" : ""}</div>
+        <div class="l-main"><div class="l-text">${isPrio(f) ? `<span class="l-prio">${PRIO[f.prioritet].ikon} ${PRIO[f.prioritet].namn}</span> · ` : ""}<b>${t.namn}</b>${f.tradslag ? ` · ${esc(f.tradslag)}` : ""}${f.status === "hamtad" ? " · ✓ hämtad" : ""}</div>
         <div class="l-text muted small">${esc(f.kommentar || "Ingen kommentar")}</div></div>
         <div class="l-dist" data-dist="${f.id}"></div></li>`;
     }).join("") : `<li class="muted">Inga fynd ännu.</li>`;
@@ -850,5 +989,7 @@
     } catch {}
     showLogin();
   })();
+  // Felsökning: kör vfDebug() i konsolen
+  window.vfDebug = () => ({ user: user?.email, syncing: !!syncing, ops: ops.length, needsLogin, hasExt, offline, lastError });
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 })();

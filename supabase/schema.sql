@@ -50,3 +50,12 @@ create policy "foton_select" on storage.objects for select to authenticated usin
 create policy "foton_insert" on storage.objects for insert to authenticated with check (bucket_id = 'foton');
 create policy "foton_update" on storage.objects for update to authenticated using (bucket_id = 'foton') with check (bucket_id = 'foton');
 create policy "foton_delete" on storage.objects for delete to authenticated using (bucket_id = 'foton');
+
+-- 3. Prioritet, trädslag och storlek (okt 2026)
+alter table public.fynd add column if not exists prioritet text not null default 'normal';
+alter table public.fynd add column if not exists tradslag text;
+alter table public.fynd add column if not exists antal_stammar smallint;
+alter table public.fynd add column if not exists diameter_cm smallint;
+do $$ begin
+  alter table public.fynd add constraint fynd_prioritet_check check (prioritet in ('normal','brattom','stig'));
+exception when duplicate_object then null; end $$;

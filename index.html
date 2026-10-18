@@ -56,7 +56,7 @@
 
     <!-- Placeringsläge -->
     <div class="place-bar" id="place-bar" hidden>
-      <p>Flytta kartan så krysset hamnar på fyndet</p>
+      <p id="place-text">Flytta kartan så krysset hamnar på fyndet</p>
       <div class="row">
         <button class="btn ghost" id="place-cancel">Avbryt</button>
         <button class="btn" id="place-gps">Min position</button>
@@ -70,7 +70,7 @@
 
   <section class="sheet" id="sheet-new" hidden>
     <div class="grip"></div>
-    <h2>Nytt fynd</h2>
+    <h2 id="form-title">Nytt fynd</h2>
     <form id="form-new">
       <div class="photos" id="new-photos">
         <label class="photo-add">
@@ -87,6 +87,28 @@
         <button type="button" data-v="timmer">Timmer</button>
         <button type="button" data-v="ris">Ris</button>
         <button type="button" data-v="annat">Annat</button>
+      </div>
+      <div id="ext-fields" class="ext">
+        <div class="field-label">Prioritet</div>
+        <div class="seg" id="f-prio">
+          <button type="button" data-v="normal" class="on">Normal</button>
+          <button type="button" data-v="brattom">⚠️ Bråttom</button>
+          <button type="button" data-v="stig">🚧 Över stig</button>
+        </div>
+        <div class="field-label">Trädslag</div>
+        <div class="chips" id="f-tradslag">
+          <button type="button" data-v="Gran">Gran</button>
+          <button type="button" data-v="Tall">Tall</button>
+          <button type="button" data-v="Björk">Björk</button>
+          <button type="button" data-v="Ek">Ek</button>
+          <button type="button" data-v="Asp">Asp</button>
+          <button type="button" data-v="Al">Al</button>
+          <button type="button" data-v="Blandat">Blandat</button>
+        </div>
+        <div class="row">
+          <label>Antal stammar<input type="number" id="f-antal" inputmode="numeric" min="1" max="999" placeholder="t.ex. 2"></label>
+          <label>Grövsta Ø (cm)<input type="number" id="f-diam" inputmode="numeric" min="1" max="300" placeholder="t.ex. 35"></label>
+        </div>
       </div>
       <label>Kommentar
         <textarea id="new-kommentar" rows="3" placeholder="T.ex. gran ca 6 m över stigen, behöver sågas i 3 bitar"></textarea>
