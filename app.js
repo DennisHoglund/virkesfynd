@@ -19,6 +19,12 @@
     stig:    { namn: "Över stig", ikon: "🚧" },
   };
   const EXT_COLS = ["prioritet", "tradslag", "antal_stammar", "diameter_cm"];
+  const STAM_COLS = ["stammar"];
+  // Volym för en stam (cylinder med diameter på mitten), i fastkubik m³f
+  const stamVol = (s) => (s && s.l > 0 && s.d > 0 ? Math.PI / 4 * (s.d / 100) ** 2 * s.l : 0);
+  const fynVol = (f) => (Array.isArray(f.stammar) ? f.stammar.reduce((a, s) => a + stamVol(s), 0) : 0);
+  const TRAVAD = 1.6, STJALPT = 2.5; // ungefärliga omräkningstal för kluven ved
+  const fmtM3 = (v) => v.toLocaleString("sv-SE", { minimumFractionDigits: v < 10 ? 2 : 1, maximumFractionDigits: v < 10 ? 2 : 1 });
   const isPrio = (f) => f.status !== "hamtad" && f.prioritet && f.prioritet !== "normal";
 
   // ---------- Hjälpare ----------
@@ -262,6 +268,7 @@
     fynd = compute();
     renderMarkers(); renderCount(); renderSync();
     if (!$("#sheet-list").hidden) renderList();
+    if (!$("#sheet-log").hidden) renderLog();
     if (openId && !$("#sheet-detail").hidden) {
       if (fynd.some((f) => f.id === openId)) renderDetail(openId); else closeSheets();
     }
@@ -293,17 +300,27 @@
   }
   // Nya kolumner finns bara om SQL-uppdateringen körts – annars skickas de inte
   let hasExt = store.get("vf_hasext", false);
+  let hasStammar = store.get("vf_hasstammar", false);
+  async function colsExist(cols) {
+    const { error } = await sb.from("fynd").select(cols.join(",")).limit(1);
+    if (!error) return true;
+    if (/column|PGRST204|42703/i.test(`${error.code} ${error.message}`)) return false;
+    return null; // okänt (t.ex. nätfel) – behåll tidigare värde
+  }
   async function checkExt() {
     try {
-      const { error } = await sb.from("fynd").select(EXT_COLS.join(",")).limit(1);
-      if (!error) hasExt = true;
-      else if (/column|PGRST204|42703/i.test(`${error.code} ${error.message}`)) hasExt = false;
-      else return;
-      store.set("vf_hasext", hasExt);
+      const [a, b] = await Promise.all([colsExist(EXT_COLS), colsExist(STAM_COLS)]);
+      if (a !== null) { hasExt = a; store.set("vf_hasext", a); }
+      if (b !== null) { hasStammar = b; store.set("vf_hasstammar", b); }
       $("#ext-fields").hidden = !hasExt;
     } catch {}
   }
-  const stripExt = (o) => { if (hasExt) return o; const c = { ...o }; EXT_COLS.forEach((k) => delete c[k]); return c; };
+  const stripExt = (o) => {
+    const c = { ...o };
+    if (!hasExt) EXT_COLS.forEach((k) => delete c[k]);
+    if (!hasStammar) STAM_COLS.forEach((k) => delete c[k]);
+    return c;
+  };
 
   async function runOp(op) {
     if (op.type === "create") {
@@ -540,11 +557,15 @@
     const btn = document.createElement("button");
     btn.type = "button"; btn.className = "sheet-close"; btn.setAttribute("aria-label", "Stäng"); btn.textContent = "✕";
     btn.onclick = () => { if (!saving) closeSheets(); };
-    sheet.insertBefore(btn, sheet.firstChild);
+    // Fast topp med handtag och ✕ som följer med när man scrollar
+    const top = document.createElement("div"); top.className = "sheet-top";
+    const grip = sheet.querySelector(".grip"); if (grip) top.appendChild(grip);
+    top.appendChild(btn);
+    sheet.insertBefore(top, sheet.firstChild);
     let y0 = null, x0 = 0, dy = 0;
     const start = (e) => {
       if (e.target.closest("input, textarea, .photos, .d-photos")) return;
-      if (sheet.scrollTop > 0 && !e.target.closest(".grip")) return;
+      if (sheet.scrollTop > 0 && !e.target.closest(".sheet-top")) return;
       y0 = e.touches[0].clientY; x0 = e.touches[0].clientX; dy = 0;
     };
     const move = (e) => {
@@ -626,6 +647,7 @@
     newPhotos = []; newTyp = "vindfalle";
     $("#new-kommentar").value = "";
     $("#f-antal").value = ""; $("#f-diam").value = "";
+    stamRows = [];
     document.querySelectorAll("#new-typ button").forEach((b) => b.classList.toggle("on", b.dataset.v === newTyp));
     renderNewPhotos();
   }
@@ -634,8 +656,51 @@
     document.querySelectorAll("#f-prio button").forEach((b) => b.classList.toggle("on", b.dataset.v === form.prio));
     document.querySelectorAll("#f-tradslag button").forEach((b) => b.classList.toggle("on", b.dataset.v === form.tradslag));
     $("#ext-fields").hidden = !hasExt;
+    $("#stam-box").hidden = !hasStammar;
+    $("#old-size").hidden = hasStammar;
+    renderStams();
     renderNewPhotos();
   }
+
+  // ---------- Stammar (mätning) ----------
+  let stamRows = []; // [{l, d}] som text medan man skriver
+  function renderStams() {
+    const box = $("#stam-list"); if (!box) return;
+    box.innerHTML = stamRows.map((r, i) => `
+      <div class="stam-row" data-i="${i}">
+        <span class="n">${i + 1}</span>
+        <input type="text" inputmode="decimal" data-k="l" placeholder="Längd m" value="${esc(r.l ?? "")}">
+        <input type="text" inputmode="numeric" data-k="d" placeholder="Ø cm" value="${esc(r.d ?? "")}">
+        <button type="button" aria-label="Ta bort stam">✕</button>
+        <span class="v"></span>
+      </div>`).join("");
+    updateStamSum();
+  }
+  const parseNum = (v) => { const n = parseFloat(String(v ?? "").replace(",", ".")); return Number.isFinite(n) && n > 0 ? n : null; };
+  function stamsClean() {
+    return stamRows.map((r) => ({ l: parseNum(r.l), d: parseNum(r.d) })).filter((r) => r.l || r.d)
+      .map((r) => ({ l: r.l ? Math.round(r.l * 10) / 10 : null, d: r.d ? Math.round(r.d) : null }));
+  }
+  function updateStamSum() {
+    document.querySelectorAll("#stam-list .stam-row").forEach((row) => {
+      const r = stamRows[+row.dataset.i]; const v = stamVol({ l: parseNum(r.l), d: parseNum(r.d) });
+      row.querySelector(".v").textContent = v ? `${fmtM3(v)} m³f` : "";
+    });
+    const tot = stamsClean().reduce((a, x) => a + stamVol(x), 0);
+    $("#stam-sum").textContent = tot ? `Totalt ${fmtM3(tot)} m³f · ≈ ${fmtM3(tot * TRAVAD)} m³ travad · ≈ ${fmtM3(tot * STJALPT)} m³ stjälpt` : "";
+  }
+  $("#stam-add").onclick = () => {
+    stamRows.push({ l: "", d: "" }); renderStams();
+    const inputs = document.querySelectorAll("#stam-list .stam-row:last-child input"); inputs[0]?.focus();
+  };
+  $("#stam-list").addEventListener("input", (e) => {
+    const row = e.target.closest(".stam-row"); if (!row) return;
+    stamRows[+row.dataset.i][e.target.dataset.k] = e.target.value; updateStamSum();
+  });
+  $("#stam-list").addEventListener("click", (e) => {
+    const btn = e.target.closest("button"); if (!btn) return;
+    stamRows.splice(+btn.closest(".stam-row").dataset.i, 1); renderStams();
+  });
   $("#f-prio").onclick = (e) => { const b = e.target.closest("button"); if (!b) return; form.prio = b.dataset.v; syncFormUi(); };
   $("#f-tradslag").onclick = (e) => {
     const b = e.target.closest("button"); if (!b) return;
@@ -648,6 +713,7 @@
     $("#new-kommentar").value = f.kommentar || "";
     $("#f-antal").value = f.antal_stammar ?? "";
     $("#f-diam").value = f.diameter_cm ?? "";
+    stamRows = Array.isArray(f.stammar) ? f.stammar.map((x) => ({ l: x.l ?? "", d: x.d ?? "" })) : [];
     $("#form-title").textContent = "Redigera fynd";
     $("#new-pos").textContent = `${f.lat.toFixed(5)}, ${f.lng.toFixed(5)} · flytta via "📍 Flytta" i fyndet`;
     syncFormUi();
@@ -655,10 +721,17 @@
   }
   const numOrNull = (v) => { const n = parseInt(v, 10); return Number.isFinite(n) && n > 0 ? n : null; };
   function extValues() {
-    return {
-      prioritet: form.prio, tradslag: form.tradslag,
-      antal_stammar: numOrNull($("#f-antal").value), diameter_cm: numOrNull($("#f-diam").value),
-    };
+    const v = { prioritet: form.prio, tradslag: form.tradslag };
+    if (hasStammar) {
+      const st = stamsClean();
+      v.stammar = st.length ? st : null;
+      // Behåll de enkla fälten i synk så äldre vyer fortfarande visar något
+      v.antal_stammar = st.length || null;
+      v.diameter_cm = st.reduce((m, x) => Math.max(m, x.d || 0), 0) || null;
+    } else {
+      v.antal_stammar = numOrNull($("#f-antal").value); v.diameter_cm = numOrNull($("#f-diam").value);
+    }
+    return v;
   }
   $("#new-typ").onclick = (e) => {
     const b = e.target.closest("button"); if (!b) return;
@@ -742,7 +815,7 @@
     try {
       const patch = {};
       const next = { typ: newTyp, kommentar: $("#new-kommentar").value.trim() || null, ...(hasExt ? extValues() : {}) };
-      for (const [k, v] of Object.entries(next)) if ((f[k] ?? null) !== v) patch[k] = v;
+      for (const [k, v] of Object.entries(next)) if (JSON.stringify(f[k] ?? null) !== JSON.stringify(v)) patch[k] = v;
       const removed = (f.fotos || []).filter((x) => !form.keep.includes(x));
       if (removed.length) patch.fotos = form.keep.slice();
       if (Object.keys(patch).length) await enqueue({ type: "update", id: f.id, patch, removeFiles: removed });
@@ -786,7 +859,7 @@
         ${f.tradslag ? `<span class="tag info">${esc(f.tradslag)}</span>` : ""}
         ${hamtad ? `<span class="tag hamtad">✓ Hämtad</span>` : ""}
       </div>
-      ${sizeText(f) ? `<p class="d-size">${sizeText(f)}</p>` : ""}
+      ${stamTable(f) || (sizeText(f) ? `<p class="d-size">${sizeText(f)}</p>` : "")}
       ${f.kommentar ? `<p class="d-text">${esc(f.kommentar)}</p>` : ""}
       ${f._pending ? `<p class="pending-note">⏳ Väntar på uppladdning</p>` : ""}
       <p class="muted small">Markerad ${fmtDate(f.created_at)}${hamtad && f.hamtad_at ? ` · hämtad ${fmtDate(f.hamtad_at)}` : ""}</p>
@@ -821,6 +894,13 @@
     $("#d-move").onclick = () => startMove(f);
     $("#d-delete").onclick = () => removeFynd(f);
     updateLive();
+  }
+  function stamTable(f) {
+    if (!Array.isArray(f.stammar) || !f.stammar.length) return "";
+    const tot = fynVol(f);
+    const rows = f.stammar.map((x, i) => `<tr><td>Stam ${i + 1}</td><td>${x.l ? `${String(x.l).replace(".", ",")} m` : "–"} × ${x.d ? `Ø ${x.d} cm` : "–"}</td><td>${stamVol(x) ? `${fmtM3(stamVol(x))} m³f` : ""}</td></tr>`).join("");
+    return `<div class="d-stammar"><table>${rows}
+      ${tot ? `<tr class="tot"><td colspan="2">Totalt · ≈ ${fmtM3(tot * TRAVAD)} m³ travad</td><td>${fmtM3(tot)} m³f</td></tr>` : ""}</table></div>`;
   }
   function sizeText(f) {
     const parts = [];
@@ -861,7 +941,8 @@
   async function setStatus(f, status) {
     const patch = { status, hamtad_at: status === "hamtad" ? new Date().toISOString() : null };
     await enqueue({ type: "update", id: f.id, patch });
-    toast(status === "hamtad" ? "Markerad som hämtad ✓" : "Markerad som kvar");
+    const v = fynVol(f);
+    toast(status === "hamtad" ? `Hämtad ✓${v ? ` – ${fmtM3(v)} m³f loggat` : " – loggat"}` : "Markerad som kvar", 3000);
   }
   async function removeFynd(f) {
     if (!confirm("Ta bort fyndet och dess foton?")) return;
@@ -875,6 +956,50 @@
     }
     closeSheets(); toast("Borttaget");
   }
+
+  // ---------- Logg ----------
+  let logYear = new Date().getFullYear();
+  $("#btn-log").onclick = () => { renderLog(); openSheet("log"); };
+  $("#log-prev").onclick = () => { logYear--; renderLog(); };
+  $("#log-next").onclick = () => { logYear++; renderLog(); };
+  function renderLog() {
+    const done = fynd.filter((f) => f.status === "hamtad" && f.hamtad_at);
+    const years = done.map((f) => new Date(f.hamtad_at).getFullYear());
+    const thisYear = new Date().getFullYear();
+    const minYear = Math.min(thisYear, ...years);
+    logYear = Math.max(minYear, Math.min(thisYear, logYear));
+    $("#log-year").textContent = logYear;
+    $("#log-prev").disabled = logYear <= minYear;
+    $("#log-next").disabled = logYear >= thisYear;
+    const rows = done.filter((f) => new Date(f.hamtad_at).getFullYear() === logYear)
+      .sort((a, b) => b.hamtad_at.localeCompare(a.hamtad_at));
+    const tot = rows.reduce((a, f) => a + fynVol(f), 0);
+    const unmeasured = rows.filter((f) => !fynVol(f)).length;
+    $("#log-cards").innerHTML = `
+      <div class="log-card big"><div class="k">Hämtat ${logYear}</div><div class="v">${fmtM3(tot)} m³f</div>
+        <div class="k">≈ ${fmtM3(tot * TRAVAD)} m³ travad · ≈ ${fmtM3(tot * STJALPT)} m³ stjälpt</div></div>
+      <div class="log-card"><div class="k">Hämtade fynd</div><div class="v">${rows.length}</div></div>
+      <div class="log-card"><div class="k">Ej mätta</div><div class="v">${unmeasured}</div></div>`;
+    let lastMonth = "";
+    $("#log-list").innerHTML = rows.length ? rows.map((f) => {
+      const d = new Date(f.hamtad_at);
+      const month = d.toLocaleDateString("sv-SE", { month: "long" });
+      const head = month !== lastMonth ? `<li class="month">${month}</li>` : ""; lastMonth = month;
+      const t = TYPER[f.typ] || TYPER.annat; const v = fynVol(f);
+      const img = f.fotos?.[0] ? `<img data-photo="${f.fotos[0]}" alt="">` : `<div class="noimg">${t.ikon}</div>`;
+      return `${head}<li data-id="${f.id}">${img}
+        <div class="l-main"><div class="l-text"><b>${d.toLocaleDateString("sv-SE", { day: "numeric", month: "short" })}</b> · ${t.namn}${f.tradslag ? ` · ${esc(f.tradslag)}` : ""}</div>
+        <div class="l-text muted small">${esc(f.kommentar || (f.stammar?.length ? `${f.stammar.length} stammar` : "Ingen kommentar"))}</div></div>
+        <div class="l-vol">${v ? `${fmtM3(v)} m³f` : `<span class="muted small">ej mätt</span>`}</div></li>`;
+    }).join("") : `<li class="muted">Inget hämtat ${logYear} än.</li>`;
+    hydratePhotos($("#log-list"));
+  }
+  $("#log-list").onclick = (e) => {
+    const li = e.target.closest("li[data-id]"); if (!li) return;
+    const f = fynd.find((x) => x.id === li.dataset.id);
+    if (f) map.setView([f.lat, f.lng], Math.max(map.getZoom(), 17));
+    openDetail(li.dataset.id);
+  };
 
   // ---------- Lista ----------
   $("#list-filter").onclick = (e) => {
@@ -891,7 +1016,7 @@
       const img = f.fotos?.[0] ? `<img data-photo="${f.fotos[0]}" alt="">` : `<div class="noimg">${t.ikon}</div>`;
       return `<li data-id="${f.id}">${img}
         <div class="l-main"><div class="l-text">${isPrio(f) ? `<span class="l-prio">${PRIO[f.prioritet].ikon} ${PRIO[f.prioritet].namn}</span> · ` : ""}<b>${t.namn}</b>${f.tradslag ? ` · ${esc(f.tradslag)}` : ""}${f.status === "hamtad" ? " · ✓ hämtad" : ""}</div>
-        <div class="l-text muted small">${esc(f.kommentar || "Ingen kommentar")}</div></div>
+        <div class="l-text muted small">${fynVol(f) ? `${fmtM3(fynVol(f))} m³f · ` : ""}${esc(f.kommentar || "Ingen kommentar")}</div></div>
         <div class="l-dist" data-dist="${f.id}"></div></li>`;
     }).join("") : `<li class="muted">Inga fynd ännu.</li>`;
     hydratePhotos($("#list"));

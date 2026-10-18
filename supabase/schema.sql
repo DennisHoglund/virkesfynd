@@ -59,3 +59,6 @@ alter table public.fynd add column if not exists diameter_cm smallint;
 do $$ begin
   alter table public.fynd add constraint fynd_prioritet_check check (prioritet in ('normal','brattom','stig'));
 exception when duplicate_object then null; end $$;
+
+-- 4. Uppmätta stammar för volym/logg (okt 2026): [{"l": längd m, "d": diameter cm}, ...]
+alter table public.fynd add column if not exists stammar jsonb;

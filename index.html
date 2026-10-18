@@ -42,6 +42,7 @@
       <button class="chip" id="btn-list" aria-label="Lista">☰ <span id="count">0</span> kvar</button>
       <div class="topbar-right">
         <button class="chip sync" id="btn-sync" hidden>Offline</button>
+        <button class="round" id="btn-log" aria-label="Logg">📒</button>
         <button class="round" id="btn-layers" aria-label="Kartlager">◫</button>
         <button class="round" id="btn-menu" aria-label="Meny">⋯</button>
       </div>
@@ -105,9 +106,15 @@
           <button type="button" data-v="Al">Al</button>
           <button type="button" data-v="Blandat">Blandat</button>
         </div>
-        <div class="row">
+        <div class="row" id="old-size">
           <label>Antal stammar<input type="number" id="f-antal" inputmode="numeric" min="1" max="999" placeholder="t.ex. 2"></label>
           <label>Grövsta Ø (cm)<input type="number" id="f-diam" inputmode="numeric" min="1" max="300" placeholder="t.ex. 35"></label>
+        </div>
+        <div id="stam-box" hidden>
+          <div class="field-label">Stammar <span class="muted small">– längd i meter, diameter på mitten i cm</span></div>
+          <div id="stam-list"></div>
+          <button type="button" class="btn ghost" id="stam-add">＋ Lägg till stam</button>
+          <p class="stam-sum" id="stam-sum"></p>
         </div>
       </div>
       <label>Kommentar
@@ -136,6 +143,20 @@
       </div>
     </div>
     <ul id="list"></ul>
+  </section>
+
+  <section class="sheet" id="sheet-log" hidden>
+    <div class="grip"></div>
+    <div class="log-head">
+      <h2>Logg</h2>
+      <div class="year-nav">
+        <button type="button" id="log-prev" aria-label="Föregående år">‹</button>
+        <span id="log-year"></span>
+        <button type="button" id="log-next" aria-label="Nästa år">›</button>
+      </div>
+    </div>
+    <div class="log-cards" id="log-cards"></div>
+    <ul id="log-list"></ul>
   </section>
 
   <section class="sheet" id="sheet-layers" hidden>
