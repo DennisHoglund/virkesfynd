@@ -80,8 +80,9 @@
     auth: {
       persistSession: true, autoRefreshToken: true, detectSessionInUrl: false,
       storage: authStorage, storageKey: AUTH_KEY,
-      // Hoppa över webbläsarens låsmekanism, som kan hänga i iOS hemskärmsappar
-      lock: (_name, _timeout, fn) => fn(),
+      // Egen enkel kö i stället för webbläsarens lås (som kan hänga i iOS hemskärmsappar).
+      // Ser till att bara en förnyelse av inloggningen pågår åt gången.
+      lock: (() => { let chain = Promise.resolve(); return (_n, _t, fn) => { const r = chain.then(fn, fn); chain = r.catch(() => {}); return r; }; })(),
     },
   });
   let user = null;
@@ -244,6 +245,10 @@
     for (const op of ops) {
       if (op.type === "create") byId.set(op.id, { status: "kvar", hamtad_at: null, ...op.row, _pending: true });
       else if (op.type === "update" && byId.has(op.id)) byId.set(op.id, { ...byId.get(op.id), ...op.patch, _pending: true });
+      else if (op.type === "photos" && byId.has(op.id)) {
+        const f = byId.get(op.id);
+        byId.set(op.id, { ...f, fotos: [...(f.fotos || []), ...op.photos.map((p) => p.path)], _pending: true });
+      }
       else if (op.type === "delete") byId.delete(op.id);
     }
     return [...byId.values()].sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
@@ -297,6 +302,26 @@
       if (!error) serverUpsert(data);
       return { error, status };
     }
+    if (op.type === "photos") {
+      const added = [];
+      for (const ph of op.photos || []) {
+        let blob = null;
+        try { blob = await photoBlob(ph); } catch {}
+        if (!blob) { lastError = "Ett foto kunde inte läsas i telefonen och hoppades över"; continue; }
+        const { error } = await sb.storage.from(BUCKET).upload(ph.path, blob, { contentType: "image/jpeg", upsert: true });
+        if (error) return { error, where: "foto" };
+        added.push(ph.path);
+      }
+      if (!added.length) return {};
+      // Läs aktuell lista först så foton som någon annan lagt till inte skrivs över
+      const cur = await sb.from("fynd").select("fotos").eq("id", op.id).maybeSingle();
+      if (cur.error) return { error: cur.error, status: cur.status };
+      if (!cur.data) return {}; // fyndet är borttaget
+      const fotos = [...new Set([...(cur.data.fotos || []), ...added])];
+      const { data, error, status } = await sb.from("fynd").update({ fotos }).eq("id", op.id).select();
+      if (!error && data?.[0]) serverUpsert(data[0]);
+      return { error, status };
+    }
     if (op.type === "update") {
       const { data, error, status } = await sb.from("fynd").update(op.patch).eq("id", op.id).select();
       if (!error && data?.[0]) serverUpsert(data[0]);
@@ -321,15 +346,25 @@
   let needsLogin = false;
 
   // Se till att inloggningen är färsk innan vi laddar upp
+  // getSession förnyar själv vid behov (och bara en gång åt gången tack vare låset)
   async function ensureSession() {
     try {
-      const { data } = await sb.auth.getSession();
-      if (data.session && data.session.expires_at * 1000 > Date.now() + 60000) return true;
-      const { data: r, error } = await sb.auth.refreshSession();
-      if (r?.session) return true;
-      if (error && !isTransient(error, error.status)) { needsLogin = true; showLogin(true); }
+      const { data, error } = await sb.auth.getSession();
+      if (data.session) { setNeedsLogin(false); return true; }
+      if (!error || !isTransient(error, error.status)) setNeedsLogin(true);
     } catch {}
     return false;
+  }
+  async function refreshAfter401() {
+    const { data, error } = await sb.auth.refreshSession();
+    if (data?.session) return true;
+    if (error && !isTransient(error, error.status)) setNeedsLogin(true);
+    return false;
+  }
+  // Utloggad: visa en diskret banner – kartan och kön fungerar som vanligt
+  function setNeedsLogin(v) {
+    needsLogin = v;
+    const b = $("#relogin"); if (b) b.hidden = !v;
   }
 
   function sync() {
@@ -339,7 +374,7 @@
       const wasStuck = ops.some((o) => Date.now() - (o.queued_at || 0) > 8000);
       try {
         if (!ops.length) return;
-        await ensureSession();
+        if (!(await ensureSession()) && needsLogin) return;
         const blocked = new Set(); // id:n vars tidigare ändring inte gick igenom – behåll ordningen per fynd
         for (const op of ops.slice()) {
           if (blocked.has(op.id)) continue;
@@ -347,7 +382,7 @@
           try { res = await runOp(op); } catch (err) { res = { error: err }; }
           if (res.error && isAuthError(res.error, res.status)) {
             // Token gick ut – förnya och försök en gång till
-            try { await sb.auth.refreshSession(); res = await runOp(op); } catch (err) { res = { error: err }; }
+            try { if (await refreshAfter401()) res = await runOp(op); } catch (err) { res = { error: err }; }
           }
           if (res.error) {
             lastError = `${new Date().toLocaleTimeString("sv-SE", { hour: "2-digit", minute: "2-digit" })}: ${res.where === "foto" ? "Foto: " : ""}${describe(res.error, res.status)}`;
@@ -390,6 +425,7 @@
       .subscribe();
   }
   async function online() {
+    await ensureSession();
     await sync();
     await loadFynd();
   }
@@ -512,7 +548,7 @@
     newTyp = b.dataset.v;
     document.querySelectorAll("#new-typ button").forEach((x) => x.classList.toggle("on", x === b));
   };
-  $("#new-photo-input").onchange = async (e) => {
+  const onNewPhotos = async (e) => {
     for (const file of e.target.files) {
       try { const blob = await shrink(file); newPhotos.push({ blob, url: URL.createObjectURL(blob) }); }
       catch { toast("Kunde inte läsa bilden"); }
@@ -520,6 +556,8 @@
     e.target.value = "";
     renderNewPhotos();
   };
+  $("#new-photo-input").onchange = onNewPhotos;
+  $("#new-photo-pick").onchange = onNewPhotos;
   function renderNewPhotos() {
     const box = $("#new-photos");
     box.querySelectorAll(".thumb").forEach((t) => t.remove());
@@ -527,7 +565,7 @@
       const d = document.createElement("div"); d.className = "thumb";
       d.innerHTML = `<img src="${p.url}" alt=""><button type="button" aria-label="Ta bort">✕</button>`;
       d.querySelector("button").onclick = () => { URL.revokeObjectURL(p.url); newPhotos.splice(i, 1); renderNewPhotos(); };
-      box.insertBefore(d, box.querySelector(".photo-add"));
+      box.appendChild(d); // knapparna först så de alltid syns
     });
   }
   // Krymp bilden till max 1600 px så den inte äter upp telefonens lagring
@@ -606,6 +644,8 @@
           <a class="btn" href="https://maps.apple.com/?daddr=${f.lat},${f.lng}&dirflg=w" target="_blank" rel="noopener">Kartor ↗</a>
           <button class="btn" id="d-copy">Kopiera koord.</button>
         </div>
+        <label class="btn" style="text-align:center">📷 Lägg till foto
+          <input type="file" id="d-photo" accept="image/*" multiple hidden></label>
         <button class="btn ${hamtad ? "" : "primary"}" id="d-status">${hamtad ? "Ångra – markera som kvar" : "✓ Markera som hämtad"}</button>
         <button class="btn danger" id="d-delete">Ta bort fynd</button>
       </div>`;
@@ -616,6 +656,7 @@
       catch { toast(`${f.lat.toFixed(6)}, ${f.lng.toFixed(6)}`, 5000); }
     };
     $("#d-status").onclick = () => setStatus(f, hamtad ? "kvar" : "hamtad");
+    $("#d-photo").onchange = (e) => addPhotos(f, e);
     $("#d-delete").onclick = () => removeFynd(f);
     updateLive();
   }
@@ -630,6 +671,25 @@
     if (!$("#sheet-list").hidden) updateListDistances();
   }
 
+  async function addPhotos(f, e) {
+    const files = [...e.target.files]; e.target.value = "";
+    if (!files.length) return;
+    toast("Sparar foto…");
+    const photos = [];
+    for (const file of files) {
+      try {
+        const blob = await shrink(file);
+        const path = `${f.id}/${uuid()}.jpg`;
+        urlCache.set(path, URL.createObjectURL(blob));
+        photos.push({ path, buf: await blob.arrayBuffer() });
+      } catch { toast("Kunde inte läsa bilden"); }
+    }
+    if (!photos.length) return;
+    await enqueue({ type: "photos", id: f.id, photos });
+    await Promise.race([syncing || Promise.resolve(), new Promise((r) => setTimeout(r, 5000))]);
+    toast(ops.some((o) => o.type === "photos" && o.id === f.id)
+      ? "Foto sparat i telefonen – laddas upp när du får täckning" : `${photos.length > 1 ? "Foton" : "Foto"} tillagt ✓`, 3000);
+  }
   async function setStatus(f, status) {
     const patch = { status, hamtad_at: status === "hamtad" ? new Date().toISOString() : null };
     await enqueue({ type: "update", id: f.id, patch });
@@ -734,7 +794,7 @@
     btn.disabled = false;
     if (error) { $("#login-error").textContent = "Fel e-post eller lösenord."; return; }
     store.set("vf_email", email);
-    if (user) { user = data.user; needsLogin = false; $("#login").hidden = true; online(); return; }
+    if (user) { user = data.user; setNeedsLogin(false); $("#login").hidden = true; toast("Inloggad ✓"); online(); return; }
     start(data.user);
   });
   $("#btn-sync").onclick = () => { if (ops.length) { toast("Laddar upp…"); online(); } else { openSheet("menu"); online(); } };
@@ -743,7 +803,10 @@
     if (!confirm(`Släng ${ops.length} ändring(ar) som inte laddats upp? Det går inte att ångra.`)) return;
     await dropOps(() => true); refresh(); toast("Väntande ändringar slängda");
   };
-  $("#btn-logout").onclick = async () => { await sb.auth.signOut(); location.reload(); };
+  $("#relogin").onclick = () => showLogin(true);
+  $("#login-cancel").onclick = () => { $("#login").hidden = true; };
+  let manualLogout = false;
+  $("#btn-logout").onclick = async () => { manualLogout = true; await sb.auth.signOut(); location.reload(); };
 
   async function start(u) {
     if (user) return;
@@ -765,12 +828,13 @@
 
   function showLogin(again = false) {
     $("#login").hidden = false;
+    $("#login-cancel").hidden = !user;
     $("#login-error").textContent = again ? "Inloggningen har gått ut – logga in igen så laddas fynden upp." : "";
     $("#email").value = store.get("vf_email", "");
     if ($("#email").value) $("#password").focus();
   }
   sb.auth.onAuthStateChange((event, session) => {
-    if (event === "SIGNED_OUT" && user) location.reload();
+    if (event === "SIGNED_OUT" && user && !manualLogout) setNeedsLogin(true);
     if (session?.user && !user && (event === "SIGNED_IN" || event === "TOKEN_REFRESHED")) start(session.user);
   });
   (async () => {

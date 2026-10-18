@@ -28,6 +28,7 @@
         <button class="btn primary" type="submit" id="login-btn">Logga in</button>
       </form>
       <p class="error" id="login-error"></p>
+      <button class="btn ghost" type="button" id="login-cancel" hidden style="width:100%">Avbryt</button>
     </div>
   </section>
 
@@ -45,6 +46,8 @@
         <button class="round" id="btn-menu" aria-label="Meny">⋯</button>
       </div>
     </header>
+
+    <button class="banner" id="relogin" hidden>🔒 Inloggningen har gått ut – tryck för att logga in</button>
 
     <div class="fabs">
       <button class="round big" id="btn-locate" aria-label="Min position">◎</button>
@@ -71,8 +74,12 @@
     <form id="form-new">
       <div class="photos" id="new-photos">
         <label class="photo-add">
-          <input type="file" id="new-photo-input" accept="image/*" capture="environment" multiple hidden>
+          <input type="file" id="new-photo-input" accept="image/*" capture="environment" hidden>
           <span>📷<br>Ta foto</span>
+        </label>
+        <label class="photo-add">
+          <input type="file" id="new-photo-pick" accept="image/*" multiple hidden>
+          <span>🖼️<br>Välj bilder</span>
         </label>
       </div>
       <div class="seg" id="new-typ">

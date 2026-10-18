@@ -131,7 +131,7 @@ a.btn { color: var(--text); display: grid; place-items: center; }
 .seg.small button { padding: 6px 12px; }
 
 .photos { display: flex; gap: 8px; overflow-x: auto; }
-.photos img, .photo-add { width: 96px; height: 96px; flex: none; border-radius: 12px; object-fit: cover; }
+.photos img, .photo-add { width: 88px; height: 88px; flex: none; border-radius: 12px; object-fit: cover; }
 .photo-add { border: 2px dashed var(--line); display: grid; place-items: center; text-align: center; color: var(--muted); font-size: 13px; }
 .photo-add span { line-height: 1.4; }
 .thumb { position: relative; }
@@ -178,3 +178,8 @@ a.btn { color: var(--text); display: grid; place-items: center; }
 .pending-note { color: var(--amber); font-weight: 600; margin: 8px 0 0; }
 #login { z-index: 3000; background: var(--bg); }
 #sync-error { word-break: break-word; }
+.banner {
+  position: fixed; left: 12px; right: 12px; top: calc(var(--safe-t) + 64px); z-index: 520;
+  background: var(--amber); color: var(--amber-ink); border: 0; border-radius: 12px;
+  padding: 12px 14px; font-weight: 700; font-size: 15px; text-align: left; box-shadow: 0 4px 16px rgba(0,0,0,.4);
+}
