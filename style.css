@@ -209,3 +209,10 @@ a.btn { color: var(--text); display: grid; place-items: center; text-decoration:
 }
 .grip { touch-action: none; padding: 6px 0; background-clip: content-box; height: 17px; }
 .sheet.dragging { transition: none; }
+
+/* Byt lösenord */
+.pw-box { margin-top: 16px; border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; background: var(--bg-2); }
+.pw-box summary { font-weight: 700; cursor: pointer; list-style: none; }
+.pw-box summary::-webkit-details-marker { display: none; }
+.pw-box form { display: grid; gap: 12px; margin-top: 12px; }
+.pw-box .error:empty { display: none; }

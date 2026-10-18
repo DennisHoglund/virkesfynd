@@ -527,7 +527,7 @@
     closeSheets(false);
     $("#backdrop").hidden = false;
     $(`#sheet-${name}`).hidden = false;
-    if (name === "menu") { $("#me-email").textContent = `Inloggad som ${user?.email || ""}`; renderSync(); checkLegacy(); }
+    if (name === "menu") { $("#me-email").textContent = `Inloggad som ${user?.email || ""}`; $("#pw-email").value = user?.email || ""; $("#pw-error").textContent = ""; renderSync(); checkLegacy(); }
   }
   function closeSheets(all = true) {
     document.querySelectorAll(".sheet").forEach((s) => (s.hidden = true));
@@ -971,6 +971,32 @@
     if (!confirm(`Släng ${ops.length} ändring(ar) som inte laddats upp? Det går inte att ångra.`)) return;
     await dropOps(() => true); refresh(); toast("Väntande ändringar slängda");
   };
+  // ---------- Byt lösenord ----------
+  $("#pw-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const err = (m) => { $("#pw-error").textContent = m; };
+    const oldPw = $("#pw-old").value, newPw = $("#pw-new").value, newPw2 = $("#pw-new2").value;
+    err("");
+    if (newPw.length < 8) return err("Det nya lösenordet måste ha minst 8 tecken.");
+    if (newPw !== newPw2) return err("De nya lösenorden är inte lika.");
+    if (newPw === oldPw) return err("Det nya lösenordet måste skilja sig från det gamla.");
+    if (!navigator.onLine) return err("Du behöver täckning för att byta lösenord.");
+    const btn = $("#pw-save"); btn.disabled = true; btn.textContent = "Sparar…";
+    try {
+      // Kontrollera nuvarande lösenord först, så ingen annan kan byta det på en olåst telefon
+      const email = user?.email || store.get("vf_email", "");
+      const { error: e1 } = await sb.auth.signInWithPassword({ email, password: oldPw });
+      if (e1) return err(/invalid|credentials/i.test(e1.message) ? "Nuvarande lösenord stämmer inte." : e1.message);
+      const { error: e2 } = await sb.auth.updateUser({ password: newPw });
+      if (e2) return err(/weak|short|least/i.test(e2.message) ? "Lösenordet är för svagt – välj ett längre." :
+                        /different|same/i.test(e2.message) ? "Det nya lösenordet måste skilja sig från det gamla." : e2.message);
+      $("#pw-form").reset(); $("#pw-box").open = false;
+      toast("Lösenordet är bytt ✓ – spara det nya i nyckelringen om telefonen frågar", 4000);
+    } catch (ex) {
+      err("Kunde inte byta lösenord: " + (ex?.message || ex));
+    } finally { btn.disabled = false; btn.textContent = "Spara nytt lösenord"; }
+  });
+
   $("#relogin").onclick = () => showLogin(true);
   $("#login-cancel").onclick = () => { $("#login").hidden = true; };
   let manualLogout = false;

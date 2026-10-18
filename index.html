@@ -160,6 +160,17 @@
       <p class="small" id="migrate-info"></p>
       <button class="btn primary" id="btn-migrate" style="width:100%">Ladda upp till databasen</button>
     </div>
+    <details class="pw-box" id="pw-box">
+      <summary>🔑 Byt lösenord</summary>
+      <form id="pw-form" autocomplete="on">
+        <input type="email" name="email" id="pw-email" autocomplete="username" hidden>
+        <label>Nuvarande lösenord<input type="password" id="pw-old" autocomplete="current-password" required></label>
+        <label>Nytt lösenord<input type="password" id="pw-new" autocomplete="new-password" minlength="8" required></label>
+        <label>Upprepa nytt lösenord<input type="password" id="pw-new2" autocomplete="new-password" minlength="8" required></label>
+        <p class="small error" id="pw-error"></p>
+        <button class="btn primary" type="submit" id="pw-save">Spara nytt lösenord</button>
+      </form>
+    </details>
     <div class="d-actions" style="margin-top:16px">
       <button class="btn ghost" id="btn-logout">Logga ut</button>
     </div>

@@ -11,6 +11,7 @@ PWA för iPhone, hostad på GitHub Pages. Data och foton sparas i Supabase.
 - Lista sorterad på prioritet och avstånd; markera fynd som hämtat
 - Prioritet (Bråttom / Över stig → röd nål), trädslag, antal stammar och grövsta diameter
 - Redigera fynd (text, typ, foton) och flytta nålen; lägg till foton från kamera eller bildbibliotek
+- Byt lösenord direkt i appen (⋯-menyn)
 - Fynd från den lokala versionen kan laddas upp till databasen (⋯-menyn)
 - Fungerar utan täckning: nya fynd, ändringar och borttag läggs i en kö i telefonen och laddas upp automatiskt när nätet är tillbaka (⇅-knappen visar hur många som väntar)
 - Senast hämtade fynd och foton sparas i telefonen, så kartan visar dem även offline
