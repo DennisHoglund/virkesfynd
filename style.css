@@ -253,3 +253,15 @@ a.btn { color: var(--text); display: grid; place-items: center; text-decoration:
 #log-list .l-main { flex: 1; min-width: 0; }
 #log-list .l-vol { font-weight: 700; color: var(--amber); text-align: right; white-space: nowrap; }
 #log-list .month { border: 0; padding: 14px 0 4px; color: var(--muted); font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+
+/* Filter */
+.round { position: relative; }
+.badge { position: absolute; top: -4px; right: -4px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+  background: var(--amber); color: var(--amber-ink); font-size: 11px; font-weight: 800; display: grid; place-items: center; }
+#btn-filter { font-size: 22px; }
+#btn-filter.active { color: var(--amber); border-color: var(--amber); }
+.filter-body { display: grid; gap: 12px; }
+.filter-body .field-label { margin-top: 4px; }
+.chips .empty { color: var(--muted); font-size: 13px; }
+.list-filter-note { margin: -4px 0 8px; font-size: 13px; color: var(--amber); }
+.list-filter-note button { background: none; border: 0; color: var(--amber); text-decoration: underline; padding: 0; font-size: 13px; }

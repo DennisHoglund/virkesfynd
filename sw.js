@@ -1,7 +1,7 @@
 // Virkesfynd service worker
 // - Appens filer: nätverk först, cache som reserv (så uppdateringar kommer fram direkt)
 // - Kartrutor: cache först, så områden du tittat på finns kvar med svag täckning i skogen
-const APP_CACHE = "vf-app-v13";
+const APP_CACHE = "vf-app-v14";
 const PHOTO_CACHE = "vf-photos-v1";
 const TILE_CACHE = "vf-tiles-v1";
 const MAX_TILES = 3000;

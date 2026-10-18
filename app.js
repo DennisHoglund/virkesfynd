@@ -132,6 +132,23 @@
   const urlCache = new Map(); // foto-sökväg -> URL (signerad eller lokal blob)
   let openId = null;
   let listFilter = "kvar";
+  // Kartfilter – sparas i telefonen
+  const FILTER0 = { status: "alla", typ: [], prio: false, tradslag: [], tid: "alla" };
+  let filter = { ...FILTER0, ...store.get("vf_filter", {}) };
+  function passesFilter(f, { ignoreStatus = false } = {}) {
+    if (!ignoreStatus && filter.status !== "alla" && (f.status === "hamtad") !== (filter.status === "hamtad")) return false;
+    if (filter.typ.length && !filter.typ.includes(f.typ)) return false;
+    if (filter.prio && !isPrio(f)) return false;
+    if (filter.tradslag.length && !filter.tradslag.includes(f.tradslag)) return false;
+    if (filter.tid !== "alla") {
+      const t = new Date(f.created_at).getTime();
+      const from = filter.tid === "ar" ? new Date(new Date().getFullYear(), 0, 1).getTime() : Date.now() - (+filter.tid) * 864e5;
+      if (!(t >= from)) return false;
+    }
+    return true;
+  }
+  const filterCount = () =>
+    (filter.status !== "alla") + (filter.typ.length > 0) + filter.prio + (filter.tradslag.length > 0) + (filter.tid !== "alla");
   let followMe = false;
 
   // ---------- Karta och lager ----------
@@ -269,6 +286,7 @@
     renderMarkers(); renderCount(); renderSync();
     if (!$("#sheet-list").hidden) renderList();
     if (!$("#sheet-log").hidden) renderLog();
+    if (!$("#sheet-filter").hidden) renderFilter();
     if (openId && !$("#sheet-detail").hidden) {
       if (fynd.some((f) => f.id === openId)) renderDetail(openId); else closeSheets();
     }
@@ -524,9 +542,10 @@
     return L.divIcon({ className: "", html: `<div class="pin ${cls}${f._pending ? " pending" : ""}"><i>${ikon}</i></div>`, iconSize: [30, 30], iconAnchor: [15, 30] });
   }
   function renderMarkers() {
-    const ids = new Set(fynd.map((f) => f.id));
+    const shown = fynd.filter((f) => passesFilter(f) || f.id === openId);
+    const ids = new Set(shown.map((f) => f.id));
     for (const [id, m] of markers) if (!ids.has(id)) { map.removeLayer(m); markers.delete(id); }
-    for (const f of fynd) {
+    for (const f of shown) {
       let m = markers.get(f.id);
       if (!m) {
         m = L.marker([f.lat, f.lng], { icon: pinIcon(f) }).addTo(map);
@@ -536,7 +555,49 @@
       m.setZIndexOffset(f.status === "hamtad" ? -100 : isPrio(f) ? 200 : 0);
     }
   }
-  function renderCount() { $("#count").textContent = fynd.filter((f) => f.status !== "hamtad").length; }
+  function renderCount() {
+    $("#count").textContent = fynd.filter((f) => f.status !== "hamtad" && passesFilter(f, { ignoreStatus: true })).length;
+    const n = filterCount();
+    $("#filter-badge").hidden = !n; $("#filter-badge").textContent = n;
+    $("#btn-filter").classList.toggle("active", n > 0);
+  }
+
+  // ---------- Filter ----------
+  function renderFilter() {
+    const on = (sel, pred) => document.querySelectorAll(`${sel} button`).forEach((b) => b.classList.toggle("on", pred(b.dataset.v)));
+    on("#flt-status", (v) => v === filter.status);
+    on("#flt-typ", (v) => filter.typ.includes(v));
+    on("#flt-prio", () => filter.prio);
+    on("#flt-tid", (v) => v === filter.tid);
+    // Trädslag: de som faktiskt finns bland fynden (+ valda)
+    const arter = [...new Set([...fynd.map((f) => f.tradslag).filter(Boolean), ...filter.tradslag])].sort((a, b) => a.localeCompare(b, "sv"));
+    $("#flt-tradslag").innerHTML = arter.length
+      ? arter.map((a) => `<button type="button" data-v="${esc(a)}" class="${filter.tradslag.includes(a) ? "on" : ""}">${esc(a)}</button>`).join("")
+      : `<span class="empty">Inga fynd har trädslag än</span>`;
+    const n = fynd.filter((f) => passesFilter(f)).length;
+    $("#flt-info").textContent = `${n} av ${fynd.length} fynd visas på kartan`;
+    $("#flt-done").textContent = `Visa ${n} fynd`;
+  }
+  function setFilter(patch) {
+    filter = { ...filter, ...patch };
+    store.set("vf_filter", filter);
+    renderFilter(); renderMarkers(); renderCount();
+    if (!$("#sheet-list").hidden) renderList();
+  }
+  const toggleIn = (arr, v) => (arr.includes(v) ? arr.filter((x) => x !== v) : [...arr, v]);
+  $("#btn-filter").onclick = () => { renderFilter(); openSheet("filter"); };
+  $("#flt-status").onclick = (e) => { const b = e.target.closest("button"); if (b) setFilter({ status: b.dataset.v }); };
+  $("#flt-typ").onclick = (e) => { const b = e.target.closest("button"); if (b) setFilter({ typ: toggleIn(filter.typ, b.dataset.v) }); };
+  $("#flt-prio").onclick = () => setFilter({ prio: !filter.prio });
+  $("#flt-tradslag").onclick = (e) => { const b = e.target.closest("button[data-v]"); if (b) setFilter({ tradslag: toggleIn(filter.tradslag, b.dataset.v) }); };
+  $("#flt-tid").onclick = (e) => { const b = e.target.closest("button"); if (b) setFilter({ tid: b.dataset.v }); };
+  $("#flt-reset").onclick = () => setFilter({ ...FILTER0 });
+  $("#flt-done").onclick = () => {
+    closeSheets();
+    const shown = fynd.filter((f) => passesFilter(f));
+    if (shown.length) map.fitBounds(L.latLngBounds(shown.map((f) => [f.lat, f.lng])).pad(0.2), { maxZoom: 18 });
+    else toast("Inga fynd matchar filtret");
+  };
 
   // ---------- Ark ----------
   let saving = false;
@@ -1009,7 +1070,8 @@
     renderList();
   };
   function renderList() {
-    let rows = fynd.filter((f) => listFilter === "alla" || f.status !== "hamtad");
+    let rows = fynd.filter((f) => (listFilter === "alla" || f.status !== "hamtad") && passesFilter(f, { ignoreStatus: true }));
+    const hidden = fynd.filter((f) => (listFilter === "alla" || f.status !== "hamtad")).length - rows.length;
     rows = rows.slice().sort((a, b) => (isPrio(b) - isPrio(a)) || (me ? distance(me, a) - distance(me, b) : 0));
     $("#list").innerHTML = rows.length ? rows.map((f) => {
       const t = TYPER[f.typ] || TYPER.annat;
@@ -1018,7 +1080,10 @@
         <div class="l-main"><div class="l-text">${isPrio(f) ? `<span class="l-prio">${PRIO[f.prioritet].ikon} ${PRIO[f.prioritet].namn}</span> · ` : ""}<b>${t.namn}</b>${f.tradslag ? ` · ${esc(f.tradslag)}` : ""}${f.status === "hamtad" ? " · ✓ hämtad" : ""}</div>
         <div class="l-text muted small">${fynVol(f) ? `${fmtM3(fynVol(f))} m³f · ` : ""}${esc(f.kommentar || "Ingen kommentar")}</div></div>
         <div class="l-dist" data-dist="${f.id}"></div></li>`;
-    }).join("") : `<li class="muted">Inga fynd ännu.</li>`;
+    }).join("") : `<li class="muted">${hidden ? "Inga fynd matchar filtret." : "Inga fynd ännu."}</li>`;
+    if (hidden) $("#list").insertAdjacentHTML("afterbegin",
+      `<li class="list-filter-note">Filter på – ${hidden} fynd dolda · <button type="button" id="list-clear-filter">Visa alla</button></li>`);
+    $("#list-clear-filter")?.addEventListener("click", (e) => { e.stopPropagation(); setFilter({ ...FILTER0 }); });
     hydratePhotos($("#list"));
     updateListDistances();
   }

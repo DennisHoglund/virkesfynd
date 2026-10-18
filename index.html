@@ -42,6 +42,7 @@
       <button class="chip" id="btn-list" aria-label="Lista">☰ <span id="count">0</span> kvar</button>
       <div class="topbar-right">
         <button class="chip sync" id="btn-sync" hidden>Offline</button>
+        <button class="round" id="btn-filter" aria-label="Filter"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"><path d="M3 5h18l-7 8.5V19l-4 2v-7.5z"/></svg><span class="badge" id="filter-badge" hidden></span></button>
         <button class="round" id="btn-log" aria-label="Logg">📒</button>
         <button class="round" id="btn-layers" aria-label="Kartlager">◫</button>
         <button class="round" id="btn-menu" aria-label="Meny">⋯</button>
@@ -143,6 +144,44 @@
       </div>
     </div>
     <ul id="list"></ul>
+  </section>
+
+  <section class="sheet" id="sheet-filter" hidden>
+    <div class="grip"></div>
+    <h2>Filter</h2>
+    <div class="filter-body">
+      <div class="field-label">Visa på kartan</div>
+      <div class="seg" id="flt-status">
+        <button type="button" data-v="alla">Alla</button>
+        <button type="button" data-v="kvar">Kvar</button>
+        <button type="button" data-v="hamtad">Hämtade</button>
+      </div>
+      <div class="field-label">Typ</div>
+      <div class="chips" id="flt-typ">
+        <button type="button" data-v="vindfalle">🌲 Vindfälle</button>
+        <button type="button" data-v="timmer">🪵 Timmer</button>
+        <button type="button" data-v="ris">🌿 Ris</button>
+        <button type="button" data-v="annat">📍 Annat</button>
+      </div>
+      <div class="field-label">Prioritet</div>
+      <div class="chips" id="flt-prio">
+        <button type="button" data-v="prio">⚠️ Bara bråttom / över stig</button>
+      </div>
+      <div class="field-label">Trädslag</div>
+      <div class="chips" id="flt-tradslag"></div>
+      <div class="field-label">Markerade</div>
+      <div class="seg" id="flt-tid">
+        <button type="button" data-v="alla">Alltid</button>
+        <button type="button" data-v="7">7 dagar</button>
+        <button type="button" data-v="30">30 dagar</button>
+        <button type="button" data-v="ar">I år</button>
+      </div>
+      <p class="small muted" id="flt-info"></p>
+      <div class="row">
+        <button type="button" class="btn ghost" id="flt-reset">Återställ</button>
+        <button type="button" class="btn primary" id="flt-done">Visa</button>
+      </div>
+    </div>
   </section>
 
   <section class="sheet" id="sheet-log" hidden>

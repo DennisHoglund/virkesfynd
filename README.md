@@ -13,6 +13,7 @@ PWA för iPhone, hostad på GitHub Pages. Data och foton sparas i Supabase.
 - Redigera fynd (text, typ, foton) och flytta nålen; lägg till foton från kamera eller bildbibliotek
 - Mät stammar (längd + diameter på mitten) → volym i m³f, ≈ travad och stjälpt
 - 📒 Logg: hämtade fynd per år med total volym
+- Filter på kartan: status, typ, prioritet, trädslag och när fyndet markerades (sparas i telefonen)
 - Byt lösenord direkt i appen (⋯-menyn)
 - Fynd från den lokala versionen kan laddas upp till databasen (⋯-menyn)
 - Fungerar utan täckning: nya fynd, ändringar och borttag läggs i en kö i telefonen och laddas upp automatiskt när nätet är tillbaka (⇅-knappen visar hur många som väntar)
