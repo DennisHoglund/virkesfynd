@@ -116,7 +116,7 @@ a.btn { color: var(--text); display: grid; place-items: center; text-decoration:
 /* Ark */
 .backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 900; }
 .sheet {
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 1000; max-height: 88vh; overflow-y: auto;
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 1000; max-height: 82vh; overflow-y: auto; overscroll-behavior: contain;
   background: var(--bg); border-top: 1px solid var(--line); border-radius: 20px 20px 0 0;
   padding: 8px 16px calc(var(--safe-b) + 16px); animation: up .2s ease-out;
 }
@@ -200,3 +200,12 @@ a.btn { color: var(--text); display: grid; place-items: center; text-decoration:
 .d-tools { display: flex; gap: 10px; }
 .l-prio { color: var(--red); font-weight: 700; }
 .d-size { margin: 10px 0 0; font-weight: 600; }
+
+/* Stäng-knapp och dra-för-att-stänga */
+.sheet-close {
+  position: sticky; top: 0; float: right; margin: -2px -4px 0 0; z-index: 5;
+  width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--line);
+  background: var(--bg-3); color: var(--text); font-size: 18px; line-height: 1; display: grid; place-items: center;
+}
+.grip { touch-action: none; padding: 6px 0; background-clip: content-box; height: 17px; }
+.sheet.dragging { transition: none; }

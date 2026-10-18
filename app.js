@@ -535,6 +535,35 @@
     if (all) openId = null;
   }
   $("#backdrop").onclick = () => { if (saving) return; closeSheets(); };
+  // ✕ i varje vy + dra ner i handtaget för att stänga
+  document.querySelectorAll(".sheet").forEach((sheet) => {
+    const btn = document.createElement("button");
+    btn.type = "button"; btn.className = "sheet-close"; btn.setAttribute("aria-label", "Stäng"); btn.textContent = "✕";
+    btn.onclick = () => { if (!saving) closeSheets(); };
+    sheet.insertBefore(btn, sheet.firstChild);
+    let y0 = null, x0 = 0, dy = 0;
+    const start = (e) => {
+      if (e.target.closest("input, textarea, .photos, .d-photos")) return;
+      if (sheet.scrollTop > 0 && !e.target.closest(".grip")) return;
+      y0 = e.touches[0].clientY; x0 = e.touches[0].clientX; dy = 0;
+    };
+    const move = (e) => {
+      if (y0 == null) return;
+      dy = e.touches[0].clientY - y0;
+      if (Math.abs(e.touches[0].clientX - x0) > Math.abs(dy)) { y0 = null; sheet.style.transform = ""; return; }
+      if (dy > 0) { sheet.classList.add("dragging"); sheet.style.transform = `translateY(${dy}px)`; if (e.cancelable) e.preventDefault(); }
+    };
+    const end = () => {
+      if (y0 == null) return;
+      sheet.classList.remove("dragging"); sheet.style.transform = "";
+      if (dy > 90 && !saving) closeSheets();
+      y0 = null;
+    };
+    sheet.addEventListener("touchstart", start, { passive: true });
+    sheet.addEventListener("touchmove", move, { passive: false });
+    sheet.addEventListener("touchend", end);
+  });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !saving) closeSheets(); });
   $("#btn-layers").onclick = () => openSheet("layers");
   $("#btn-menu").onclick = () => openSheet("menu");
   $("#btn-list").onclick = () => { renderList(); openSheet("list"); };
