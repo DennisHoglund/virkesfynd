@@ -176,3 +176,5 @@ a.btn { color: var(--text); display: grid; place-items: center; }
 .chip.sync.warn { color: var(--amber); border-color: var(--amber); }
 .pin.pending { border-style: dashed; border-color: var(--amber); }
 .pending-note { color: var(--amber); font-weight: 600; margin: 8px 0 0; }
+#login { z-index: 3000; background: var(--bg); }
+#sync-error { word-break: break-word; }

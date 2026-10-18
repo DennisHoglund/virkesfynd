@@ -274,13 +274,26 @@
     if ([401, 403, 408, 425, 429].includes(st) || st >= 500) return true;
     return /fetch|network|load failed|timeout|offline/i.test(err?.message || "");
   }
+  // Foton i kön sparas som bytes (ArrayBuffer). Äldre köposter kan ha Blob,
+  // som iOS ibland inte kan läsa efter omstart – då hoppar vi över just det fotot.
+  async function photoBlob(ph) {
+    if (ph.buf) return new Blob([ph.buf], { type: "image/jpeg" });
+    if (ph.blob) { const buf = await ph.blob.arrayBuffer(); return new Blob([buf], { type: "image/jpeg" }); }
+    return null;
+  }
   async function runOp(op) {
     if (op.type === "create") {
+      const row = { ...op.row, fotos: [] };
       for (const ph of op.photos || []) {
-        const { error } = await sb.storage.from(BUCKET).upload(ph.path, ph.blob, { contentType: "image/jpeg", upsert: true });
-        if (error) return { error };
+        let blob = null;
+        try { blob = await photoBlob(ph); } catch (err) { console.warn("Kunde inte läsa foto i kön", err); }
+        if (!blob) { lastError = "Ett foto kunde inte läsas i telefonen och hoppades över"; continue; }
+        const { error } = await sb.storage.from(BUCKET).upload(ph.path, blob, { contentType: "image/jpeg", upsert: true });
+        if (error) return { error, where: "foto" };
+        row.fotos.push(ph.path);
       }
-      const { data, error, status } = await sb.from("fynd").upsert(op.row, { onConflict: "id" }).select().single();
+      if (!op.photos) row.fotos = op.row.fotos || [];
+      const { data, error, status } = await sb.from("fynd").upsert(row, { onConflict: "id" }).select().single();
       if (!error) serverUpsert(data);
       return { error, status };
     }
@@ -300,28 +313,58 @@
     return {};
   }
   let syncing = null;
+  let lastError = store.get("vf_last_error", "");
+  const describe = (err, status) =>
+    `${err?.message || err?.error || String(err)}${status || err?.status || err?.statusCode ? ` (${status || err?.status || err?.statusCode})` : ""}`;
+  const isAuthError = (err, status) =>
+    Number(status ?? err?.status ?? err?.statusCode) === 401 || /jwt|token|unauthori/i.test(err?.message || "");
+  let needsLogin = false;
+
+  // Se till att inloggningen är färsk innan vi laddar upp
+  async function ensureSession() {
+    try {
+      const { data } = await sb.auth.getSession();
+      if (data.session && data.session.expires_at * 1000 > Date.now() + 60000) return true;
+      const { data: r, error } = await sb.auth.refreshSession();
+      if (r?.session) return true;
+      if (error && !isTransient(error, error.status)) { needsLogin = true; showLogin(true); }
+    } catch {}
+    return false;
+  }
+
   function sync() {
     if (!user) return Promise.resolve();
     return syncing ||= (async () => {
-      const had = ops.length; let dropped = 0;
+      const had = ops.length; let dropped = 0; let done = 0;
       const wasStuck = ops.some((o) => Date.now() - (o.queued_at || 0) > 8000);
       try {
-        while (ops.length) {
-          const op = ops[0];
+        if (!ops.length) return;
+        await ensureSession();
+        const blocked = new Set(); // id:n vars tidigare ändring inte gick igenom – behåll ordningen per fynd
+        for (const op of ops.slice()) {
+          if (blocked.has(op.id)) continue;
           let res;
           try { res = await runOp(op); } catch (err) { res = { error: err }; }
-          if (res.error) {
-            if (isTransient(res.error, res.status)) break;
-            dropped++; console.warn("Ändring kunde inte sparas", op, res.error);
+          if (res.error && isAuthError(res.error, res.status)) {
+            // Token gick ut – förnya och försök en gång till
+            try { await sb.auth.refreshSession(); res = await runOp(op); } catch (err) { res = { error: err }; }
           }
+          if (res.error) {
+            lastError = `${new Date().toLocaleTimeString("sv-SE", { hour: "2-digit", minute: "2-digit" })}: ${res.where === "foto" ? "Foto: " : ""}${describe(res.error, res.status)}`;
+            store.set("vf_last_error", lastError);
+            console.warn("Uppladdning misslyckades", op, res.error);
+            if (isTransient(res.error, res.status)) { blocked.add(op.id); continue; }
+            dropped++;
+          } else done++;
           await Outbox.del(op.seq);
-          ops.shift();
+          ops = ops.filter((o) => o.seq !== op.seq);
           refresh();
         }
-      } finally { syncing = null; }
-      if (dropped) toast(`${dropped} ändring(ar) kunde inte sparas`, 4000);
+        if (!ops.length && !dropped) { lastError = ""; store.set("vf_last_error", ""); }
+      } finally { syncing = null; renderSync(); }
+      if (dropped) toast(`${dropped} ändring(ar) kunde inte sparas – se ⋯`, 4000);
       else if (had && !ops.length && wasStuck) toast("Uppladdat ✓");
-      renderSync();
+      else if (ops.length && lastError && done === 0 && navigator.onLine && !offline) toast("Uppladdningen misslyckades – se ⋯", 3500);
     })();
   }
 
@@ -380,6 +423,8 @@
     chip.hidden = !n && !offline;
     chip.classList.toggle("warn", n > 0);
     chip.textContent = n ? `⇅ ${n} väntar` : "Offline";
+    const errBox = $("#sync-error");
+    if (errBox) { errBox.textContent = lastError ? `Senaste fel: ${lastError}` : ""; errBox.hidden = !lastError; }
     const info = $("#sync-info");
     if (info) info.textContent = n
       ? `${n} ändring(ar) väntar på att laddas upp. Det sker automatiskt när du har täckning.`
@@ -505,7 +550,7 @@
     saving = true; const btn = $("#new-save"); btn.disabled = true; btn.textContent = "Sparar…";
     try {
       const id = uuid();
-      const photos = newPhotos.map((p) => ({ path: `${id}/${uuid()}.jpg`, blob: p.blob }));
+      const photos = await Promise.all(newPhotos.map(async (p) => ({ path: `${id}/${uuid()}.jpg`, buf: await p.blob.arrayBuffer() })));
       photos.forEach((ph, i) => urlCache.set(ph.path, newPhotos[i].url)); // visa direkt
       const row = {
         id, created_at: new Date().toISOString(),
@@ -518,7 +563,9 @@
       await enqueue({ type: "create", id, row, photos });
       // Vänta en kort stund på uppladdningen för att kunna säga hur det gick
       await Promise.race([syncing || Promise.resolve(), new Promise((r) => setTimeout(r, 5000))]);
-      toast(ops.some((o) => o.id === id) ? "Sparat i telefonen – laddas upp när du får täckning 🪵" : "Fynd sparat 🪵", 3000);
+      if (serverFynd.some((f) => f.id === id)) toast("Fynd sparat 🪵");
+      else if (ops.some((o) => o.id === id)) toast("Sparat i telefonen – laddas upp när du får täckning 🪵", 3000);
+      else toast("Fyndet kunde inte sparas – se ⋯", 4000);
     } catch (err) {
       toast("Kunde inte spara: " + (err?.message || err), 4000);
     } finally { saving = false; btn.disabled = false; btn.textContent = "Spara"; }
@@ -687,6 +734,7 @@
     btn.disabled = false;
     if (error) { $("#login-error").textContent = "Fel e-post eller lösenord."; return; }
     store.set("vf_email", email);
+    if (user) { user = data.user; needsLogin = false; $("#login").hidden = true; online(); return; }
     start(data.user);
   });
   $("#btn-sync").onclick = () => { if (ops.length) { toast("Laddar upp…"); online(); } else { openSheet("menu"); online(); } };
@@ -705,7 +753,9 @@
     startGps();
     try {
       ops = await Outbox.all();
-      for (const op of ops) for (const ph of op.photos || []) urlCache.set(ph.path, URL.createObjectURL(ph.blob));
+      for (const op of ops) for (const ph of op.photos || []) {
+        try { const b = await photoBlob(ph); if (b) urlCache.set(ph.path, URL.createObjectURL(b)); } catch {}
+      }
     } catch {}
     refresh();               // visa sparade fynd direkt, även utan täckning
     await online();
@@ -713,8 +763,9 @@
     if ((await legacyPending()).length) toast("Du har fynd i telefonen att ladda upp – se ⋯", 4000);
   }
 
-  function showLogin() {
+  function showLogin(again = false) {
     $("#login").hidden = false;
+    $("#login-error").textContent = again ? "Inloggningen har gått ut – logga in igen så laddas fynden upp." : "";
     $("#email").value = store.get("vf_email", "");
     if ($("#email").value) $("#password").focus();
   }
