@@ -11,6 +11,7 @@
     timmer:    { namn: "Timmer",    ikon: "🪵" },
     ris:       { namn: "Ris",       ikon: "🌿" },
     annat:     { namn: "Annat",     ikon: "📍" },
+    risktrad:  { namn: "Riskträd",  ikon: "⚠️" },
   };
   const START = { lat: 59.33, lng: 18.07, zoom: 14 };
   const PRIO = {
@@ -18,6 +19,8 @@
     brattom: { namn: "Bråttom",   ikon: "⚠️" },
     stig:    { namn: "Över stig", ikon: "🚧" },
   };
+  // Riskträd "åtgärdas" i stället för att "hämtas"
+  const doneWord = (f, cap = false) => (f.typ === "risktrad" ? (cap ? "Åtgärdad" : "åtgärdad") : (cap ? "Hämtad" : "hämtad"));
   const EXT_COLS = ["prioritet", "tradslag", "antal_stammar", "diameter_cm"];
   const STAM_COLS = ["stammar"];
   // Volym för en stam (cylinder med diameter på mitten), i fastkubik m³f
@@ -304,6 +307,7 @@
   // Fel som går över av sig själv (ingen täckning, utloggad token, serverfel) → försök igen senare
   function isTransient(err, status) {
     if (!navigator.onLine) return true;
+    if (err?.code === "23514" && /typ/i.test(err?.message || "")) return true; // SQL-uppdatering saknas – vänta i kön
     const st = Number(status ?? err?.status ?? err?.statusCode ?? 0);
     if (!st) return true;
     if ([401, 403, 408, 425, 429].includes(st) || st >= 500) return true;
@@ -397,6 +401,7 @@
   let syncing = null;
   let lastError = store.get("vf_last_error", "");
   const describe = (err, status) =>
+    err?.code === "23514" && /typ/i.test(err?.message || "") ? "Databasen saknar typen Riskträd – kör SQL-uppdateringen" :
     `${err?.message || err?.error || String(err)}${status || err?.status || err?.statusCode ? ` (${status || err?.status || err?.statusCode})` : ""}`;
   const isAuthError = (err, status) =>
     Number(status ?? err?.status ?? err?.statusCode) === 401 || /jwt|token|unauthori/i.test(err?.message || "");
@@ -918,7 +923,7 @@
         <span class="tag ${f.typ}">${typ.ikon} ${typ.namn}</span>
         ${isPrio(f) ? `<span class="tag prio">${PRIO[f.prioritet].ikon} ${PRIO[f.prioritet].namn}</span>` : ""}
         ${f.tradslag ? `<span class="tag info">${esc(f.tradslag)}</span>` : ""}
-        ${hamtad ? `<span class="tag hamtad">✓ Hämtad</span>` : ""}
+        ${hamtad ? `<span class="tag hamtad">✓ ${doneWord(f, true)}</span>` : ""}
       </div>
       ${stamTable(f) || (sizeText(f) ? `<p class="d-size">${sizeText(f)}</p>` : "")}
       ${f.kommentar ? `<p class="d-text">${esc(f.kommentar)}</p>` : ""}
@@ -940,7 +945,7 @@
         </div>
         <label class="btn" style="text-align:center">📷 Lägg till foto
           <input type="file" id="d-photo" accept="image/*" multiple hidden></label>
-        <button class="btn ${hamtad ? "" : "primary"}" id="d-status">${hamtad ? "Ångra – markera som kvar" : "✓ Markera som hämtad"}</button>
+        <button class="btn ${hamtad ? "" : "primary"}" id="d-status">${hamtad ? "Ångra – markera som kvar" : `✓ Markera som ${doneWord(f)}`}</button>
         <button class="btn danger" id="d-delete">Ta bort fynd</button>
       </div>`;
     hydratePhotos($("#detail"));
@@ -1003,7 +1008,9 @@
     const patch = { status, hamtad_at: status === "hamtad" ? new Date().toISOString() : null };
     await enqueue({ type: "update", id: f.id, patch });
     const v = fynVol(f);
-    toast(status === "hamtad" ? `Hämtad ✓${v ? ` – ${fmtM3(v)} m³f loggat` : " – loggat"}` : "Markerad som kvar", 3000);
+    toast(status === "hamtad"
+      ? (f.typ === "risktrad" ? "Riskträdet markerat som åtgärdat ✓" : `Hämtad ✓${v ? ` – ${fmtM3(v)} m³f loggat` : " – loggat"}`)
+      : "Markerad som kvar", 3000);
   }
   async function removeFynd(f) {
     if (!confirm("Ta bort fyndet och dess foton?")) return;
@@ -1141,7 +1148,7 @@
   $("#log-prev").onclick = () => { logYear--; renderLog(); };
   $("#log-next").onclick = () => { logYear++; renderLog(); };
   function renderLog() {
-    const done = fynd.filter((f) => f.status === "hamtad" && f.hamtad_at);
+    const done = fynd.filter((f) => f.status === "hamtad" && f.hamtad_at && (f.typ !== "risktrad" || fynVol(f) > 0));
     const years = done.map((f) => new Date(f.hamtad_at).getFullYear());
     const thisYear = new Date().getFullYear();
     const minYear = Math.min(thisYear, ...years);
@@ -1194,7 +1201,7 @@
       const t = TYPER[f.typ] || TYPER.annat;
       const img = f.fotos?.[0] ? `<img data-photo="${f.fotos[0]}" alt="">` : `<div class="noimg">${t.ikon}</div>`;
       return `<li data-id="${f.id}">${img}
-        <div class="l-main"><div class="l-text">${isPrio(f) ? `<span class="l-prio">${PRIO[f.prioritet].ikon} ${PRIO[f.prioritet].namn}</span> · ` : ""}<b>${t.namn}</b>${f.tradslag ? ` · ${esc(f.tradslag)}` : ""}${f.status === "hamtad" ? " · ✓ hämtad" : ""}</div>
+        <div class="l-main"><div class="l-text">${isPrio(f) ? `<span class="l-prio">${PRIO[f.prioritet].ikon} ${PRIO[f.prioritet].namn}</span> · ` : ""}<b>${t.namn}</b>${f.tradslag ? ` · ${esc(f.tradslag)}` : ""}${f.status === "hamtad" ? ` · ✓ ${doneWord(f)}` : ""}</div>
         <div class="l-text muted small">${fynVol(f) ? `${fmtM3(fynVol(f))} m³f · ` : ""}${esc(f.kommentar || "Ingen kommentar")}</div></div>
         <div class="l-dist" data-dist="${f.id}"></div></li>`;
     }).join("") : `<li class="muted">${hidden ? "Inga fynd matchar filtret." : "Inga fynd ännu."}</li>`;

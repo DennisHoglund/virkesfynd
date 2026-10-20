@@ -10,6 +10,7 @@ PWA för iPhone, hostad på GitHub Pages. Data och foton sparas i Supabase.
 - Hitta tillbaka: avstånd och riktningspil (med kompass på iPhone), knapp till Apple Kartor
 - Lista sorterad på prioritet och avstånd; markera fynd som hämtat
 - Prioritet (Bråttom / Över stig → röd nål), trädslag, antal stammar och grövsta diameter
+- ⚠️ Riskträd: stående träd som kan falla (gul nål), markeras som åtgärdade i stället för hämtade
 - Redigera fynd (text, typ, foton) och flytta nålen; lägg till foton från kamera eller bildbibliotek
 - Mät stammar (längd + diameter på mitten) → volym i m³f, ≈ travad och stjälpt
 - 📒 Logg: hämtade fynd per år med total volym

@@ -62,3 +62,7 @@ exception when duplicate_object then null; end $$;
 
 -- 4. Uppmätta stammar för volym/logg (okt 2026): [{"l": längd m, "d": diameter cm}, ...]
 alter table public.fynd add column if not exists stammar jsonb;
+
+-- 5. Ny typ: riskträd (okt 2026)
+alter table public.fynd drop constraint if exists fynd_typ_check;
+alter table public.fynd add constraint fynd_typ_check check (typ in ('vindfalle','timmer','ris','annat','risktrad'));

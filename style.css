@@ -13,6 +13,7 @@
   --vindfalle: #f0a830;
   --ris: #8fbf5a;
   --annat: #8fa3c8;
+  --risk: #ffd21f;
   --hamtad: #6c7a71;
   --safe-b: env(safe-area-inset-bottom, 0px);
   --safe-t: env(safe-area-inset-top, 0px);
@@ -110,6 +111,7 @@ a.btn { color: var(--text); display: grid; place-items: center; text-decoration:
 .pin.timmer { background: var(--timmer); }
 .pin.ris { background: var(--ris); }
 .pin.annat { background: var(--annat); }
+.pin.risktrad { background: var(--risk); border-color: #1a1a1a; }
 .pin.hamtad { background: var(--hamtad); opacity: .75; }
 .me-dot { width: 18px; height: 18px; border-radius: 50%; background: #3d8bfd; border: 3px solid #fff; box-shadow: 0 0 0 6px rgba(61,139,253,.25); }
 
@@ -144,6 +146,7 @@ a.btn { color: var(--text); display: grid; place-items: center; text-decoration:
 .tag { padding: 4px 10px; border-radius: 999px; font-size: 13px; font-weight: 700; color: #1a1a1a; }
 .tag.vindfalle { background: var(--vindfalle); } .tag.timmer { background: var(--timmer); }
 .tag.ris { background: var(--ris); } .tag.annat { background: var(--annat); }
+.tag.risktrad { background: var(--risk); }
 .tag.hamtad { background: var(--hamtad); color: #fff; }
 .d-text { font-size: 17px; line-height: 1.45; white-space: pre-wrap; margin: 12px 0; }
 .nav-box { display: flex; align-items: center; gap: 16px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 16px; padding: 14px; margin: 12px 0; }
@@ -282,3 +285,5 @@ a.btn { color: var(--text); display: grid; place-items: center; text-decoration:
 .v-count { position: absolute; top: calc(var(--safe-t) + 22px); left: 0; right: 0; text-align: center; color: #fff; font-weight: 700;
   font-size: 15px; pointer-events: none; text-shadow: 0 1px 3px #000; }
 .d-photos img, #new-photos .thumb img { cursor: zoom-in; }
+
+#new-typ button { font-size: 13px; padding: 9px 2px; }
