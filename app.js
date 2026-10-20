@@ -1018,6 +1018,123 @@
     closeSheets(); toast("Borttaget");
   }
 
+  // ---------- Bildvisare ----------
+  const Viewer = (() => {
+    const el = $("#viewer"), track = $("#v-track");
+    let idx = 0, n = 0, scale = 1;
+    function open(srcs, start) {
+      n = srcs.length; idx = start; scale = 1;
+      track.innerHTML = srcs.map((src) => `<div class="v-slide"><div class="v-zoom"><img src="${src}" alt=""></div></div>`).join("");
+      el.hidden = false;
+      requestAnimationFrame(() => { track.scrollLeft = start * track.clientWidth; updateCount(); });
+    }
+    function close() { el.hidden = true; el.style.transform = ""; el.style.opacity = ""; track.innerHTML = ""; }
+    const isOpen = () => !el.hidden;
+    function updateCount() { $("#v-count").textContent = n > 1 ? `${idx + 1} / ${n}` : ""; }
+    function current() { return track.children[idx]?.querySelector(".v-zoom"); }
+    function setScale(z, s, cx, cy) {
+      const img = z.querySelector("img");
+      const prev = scale; scale = Math.min(5, Math.max(1, s));
+      if (scale === 1) { z.classList.remove("zoomed"); img.style.width = ""; img.style.height = ""; return; }
+      if (!z.classList.contains("zoomed")) {
+        // Startstorlek = så som bilden visas nu
+        const r = img.getBoundingClientRect(); img.dataset.w = r.width; img.dataset.h = r.height; z.classList.add("zoomed");
+      }
+      const w = +img.dataset.w * scale, h = +img.dataset.h * scale;
+      img.style.width = `${w}px`; img.style.height = `${h}px`;
+      img.style.margin = `${Math.max(0, (z.clientHeight - h) / 2)}px ${Math.max(0, (z.clientWidth - w) / 2)}px`;
+      // Håll punkten under fingrarna på plats
+      const k = scale / prev;
+      z.scrollLeft = (z.scrollLeft + cx) * k - cx; z.scrollTop = (z.scrollTop + cy) * k - cy;
+    }
+    track.addEventListener("scroll", () => {
+      const i = Math.round(track.scrollLeft / Math.max(1, track.clientWidth));
+      if (i !== idx) { const z = current(); if (z && scale > 1) setScale(z, 1, 0, 0); idx = i; scale = 1; updateCount(); }
+    }, { passive: true });
+
+    // Gester: nyp för zoom, dubbeltryck, dra nedåt för att stänga, tryck bredvid för att stänga
+    let pinch = null, drag = null, lastTap = 0, moved = false;
+    const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+    el.addEventListener("touchstart", (e) => {
+      moved = false;
+      if (e.touches.length === 2) {
+        const z = current(); if (!z) return;
+        const r = z.getBoundingClientRect();
+        pinch = { d: dist(e.touches), s: scale, cx: (e.touches[0].clientX + e.touches[1].clientX) / 2 - r.left, cy: (e.touches[0].clientY + e.touches[1].clientY) / 2 - r.top };
+        drag = null;
+      } else if (e.touches.length === 1 && scale === 1) {
+        drag = { x: e.touches[0].clientX, y: e.touches[0].clientY, dy: 0, active: false };
+      }
+    }, { passive: true });
+    el.addEventListener("touchmove", (e) => {
+      moved = true;
+      if (pinch && e.touches.length === 2) {
+        e.preventDefault();
+        setScale(current(), pinch.s * dist(e.touches) / pinch.d, pinch.cx, pinch.cy);
+      } else if (drag && e.touches.length === 1) {
+        const dx = e.touches[0].clientX - drag.x, dy = e.touches[0].clientY - drag.y;
+        if (!drag.active && Math.abs(dy) > 12 && Math.abs(dy) > Math.abs(dx) * 1.5 && dy > 0) drag.active = true;
+        if (drag.active) {
+          e.preventDefault(); drag.dy = dy;
+          el.style.transform = `translateY(${dy}px)`; el.style.opacity = String(Math.max(0.3, 1 - dy / 400));
+        }
+      }
+    }, { passive: false });
+    el.addEventListener("touchend", (e) => {
+      if (pinch && e.touches.length < 2) { pinch = null; if (scale < 1.05) setScale(current(), 1, 0, 0); return; }
+      if (drag?.active) {
+        if (drag.dy > 110) close(); else { el.style.transform = ""; el.style.opacity = ""; }
+        drag = null; return;
+      }
+      drag = null;
+      // Dubbeltryck på bilden = zooma in/ut
+      const now = Date.now();
+      if (!moved && e.target.tagName === "IMG") {
+        if (now - lastTap < 300) {
+          const z = current(), r = z.getBoundingClientRect(), t = e.changedTouches[0];
+          setScale(z, scale > 1 ? 1 : 2.5, t.clientX - r.left, t.clientY - r.top);
+          lastTap = 0; e.preventDefault(); return;
+        }
+        lastTap = now;
+      }
+    });
+    // Ligger punkten på själva bilden (inte på de tomma kanterna runt den)?
+    function onPicture(img, x, y) {
+      if (!img || img.tagName !== "IMG") return false;
+      const r = img.getBoundingClientRect();
+      const k = Math.min(r.width / (img.naturalWidth || 1), r.height / (img.naturalHeight || 1));
+      const w = img.naturalWidth * k, h = img.naturalHeight * k;
+      const left = r.left + (r.width - w) / 2, top = r.top + (r.height - h) / 2;
+      return x >= left && x <= left + w && y >= top && y <= top + h;
+    }
+    // Klick (även mus): tryck bredvid bilden stänger
+    el.addEventListener("click", (e) => {
+      if (e.target.closest(".v-close")) return close();
+      if (!moved && scale === 1 && !onPicture(e.target, e.clientX, e.clientY)) close();
+    });
+    el.addEventListener("dblclick", (e) => {
+      if (e.target.tagName !== "IMG") return;
+      const z = current(), r = z.getBoundingClientRect();
+      setScale(z, scale > 1 ? 1 : 2.5, e.clientX - r.left, e.clientY - r.top);
+    });
+    document.addEventListener("keydown", (e) => {
+      if (!isOpen()) return;
+      if (e.key === "Escape") { e.stopImmediatePropagation(); close(); }
+      if (e.key === "ArrowRight" && idx < n - 1) track.scrollTo({ left: (idx + 1) * track.clientWidth, behavior: "smooth" });
+      if (e.key === "ArrowLeft" && idx > 0) track.scrollTo({ left: (idx - 1) * track.clientWidth, behavior: "smooth" });
+    }, true);
+    return { open, close, isOpen };
+  })();
+
+  // Tryck på en bild i ett fynd eller i formuläret → helskärm
+  document.addEventListener("click", (e) => {
+    const img = e.target.closest(".d-photos img, #new-photos .thumb img");
+    if (!img || !img.src) return;
+    const box = img.closest(".d-photos, #new-photos");
+    const imgs = [...box.querySelectorAll(".d-photos img, .thumb img")].filter((x) => x.src);
+    Viewer.open(imgs.map((x) => x.src), Math.max(0, imgs.indexOf(img)));
+  });
+
   // ---------- Logg ----------
   let logYear = new Date().getFullYear();
   $("#btn-log").onclick = () => { renderLog(); openSheet("log"); };

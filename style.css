@@ -265,3 +265,20 @@ a.btn { color: var(--text); display: grid; place-items: center; text-decoration:
 .chips .empty { color: var(--muted); font-size: 13px; }
 .list-filter-note { margin: -4px 0 8px; font-size: 13px; color: var(--amber); }
 .list-filter-note button { background: none; border: 0; color: var(--amber); text-decoration: underline; padding: 0; font-size: 13px; }
+
+/* Bildvisare */
+#viewer { position: fixed; inset: 0; z-index: 4000; background: #050a07; animation: vfade .15s ease-out; }
+@keyframes vfade { from { opacity: 0; } }
+#viewer.dragging { transition: none; }
+.v-track { position: absolute; inset: 0; display: flex; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; }
+.v-track::-webkit-scrollbar { display: none; }
+.v-slide { flex: 0 0 100%; height: 100%; scroll-snap-align: center; scroll-snap-stop: always; position: relative; }
+.v-zoom { position: absolute; inset: 0; overflow: hidden; display: grid; place-items: center; touch-action: pan-x; }
+.v-zoom.zoomed { overflow: auto; overscroll-behavior: contain; place-items: start; touch-action: pan-x pan-y; }
+.v-zoom img { width: 100%; height: 100%; object-fit: contain; user-select: none; -webkit-user-drag: none; }
+.v-zoom.zoomed img { max-width: none; max-height: none; flex: none; }
+.v-close { position: absolute; top: calc(var(--safe-t) + 12px); right: 12px; width: 44px; height: 44px; border-radius: 50%;
+  border: 1px solid rgba(255,255,255,.25); background: rgba(0,0,0,.55); color: #fff; font-size: 20px; display: grid; place-items: center; }
+.v-count { position: absolute; top: calc(var(--safe-t) + 22px); left: 0; right: 0; text-align: center; color: #fff; font-weight: 700;
+  font-size: 15px; pointer-events: none; text-shadow: 0 1px 3px #000; }
+.d-photos img, #new-photos .thumb img { cursor: zoom-in; }
