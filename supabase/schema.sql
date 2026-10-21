@@ -32,6 +32,12 @@ create policy "fynd_insert" on public.fynd for insert to authenticated with chec
 create policy "fynd_update" on public.fynd for update to authenticated using (true) with check (true);
 create policy "fynd_delete" on public.fynd for delete to authenticated using (true);
 
+-- Uttryckliga rättigheter för Data API (krävs för tabeller som skapas efter 30 okt 2026,
+-- t.ex. om filen körs i ett nytt projekt). Inloggade får CRUD; anon får inget.
+revoke all on public.fynd from anon;
+grant select, insert, update, delete on public.fynd to authenticated;
+grant select, insert, update, delete on public.fynd to service_role;
+
 -- Live-uppdateringar mellan enheter
 do $$ begin
   alter publication supabase_realtime add table public.fynd;
