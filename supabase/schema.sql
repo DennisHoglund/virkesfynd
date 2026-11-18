@@ -72,3 +72,10 @@ alter table public.fynd add column if not exists stammar jsonb;
 -- 5. Ny typ: riskträd (okt 2026)
 alter table public.fynd drop constraint if exists fynd_typ_check;
 alter table public.fynd add constraint fynd_typ_check check (typ in ('vindfalle','timmer','ris','annat','risktrad'));
+
+-- 6. Keepalive (nov 2026): anropas av GitHub Actions (.github/workflows/keepalive.yml)
+-- varannan dag så att gratisprojektet inte pausas. Returnerar bara 'ok' – ingen data.
+create or replace function public.keepalive() returns text
+language sql stable as $$ select 'ok'::text $$;
+revoke all on function public.keepalive() from public;
+grant execute on function public.keepalive() to anon, authenticated;

@@ -26,7 +26,8 @@ PWA för iPhone, hostad på GitHub Pages. Data och foton sparas i Supabase.
 1. **SQL Editor → New query** → klistra in `supabase/schema.sql` → **Run**.
 2. **Authentication → Users → Add user → Create new user**: e-post + lösenord, bocka i *Auto Confirm User*.
 3. **Authentication → Sign In / Providers**: slå av *Allow new users to sign up*.
-4. Rekommenderat: **Authentication → Sessions** – höj *Refresh token reuse interval* (t.ex. 600 s) så iOS inte loggar ut appen.
+4. Kör även keepalive-delen i `schema.sql`. GitHub Actions (`keepalive.yml`) anropar då databasen varannan dag så gratisprojektet inte pausas efter 7 dagars inaktivitet.
+5. Rekommenderat: **Authentication → Sessions** – höj *Refresh token reuse interval* (t.ex. 600 s) så iOS inte loggar ut appen.
 
 Uppdateringar av databasen ligger sist i `schema.sql` och kan köras om utan risk (`if not exists`).
 
